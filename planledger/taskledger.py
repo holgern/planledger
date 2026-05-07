@@ -268,6 +268,157 @@ def push_slice(
     }
 
 
+def push_plan(
+    workspace: Workspace,
+    plan_id: str,
+    *,
+    create_tasks: bool = False,
+    dry_run: bool = False,
+    activate_first: bool = False,
+    update_existing: bool = False,
+) -> dict[str, Any]:
+    plan_record = load_record(workspace, "plan", plan_id)
+    initiative_id = str(plan_record.front_matter.get("initiative"))
+
+    all_slices = list_records(workspace, "slice")
+    plan_slices = [
+        s
+        for s in all_slices
+        if s.front_matter.get("plan") == plan_id
+        and (
+            s.front_matter.get("status") == "ready-for-execution"
+            or s.front_matter.get("ready_for_taskledger") is True
+        )
+    ]
+
+    accepted_decisions = [
+        d
+        for d in list_records(workspace, "decision")
+        if d.front_matter.get("initiative") == initiative_id
+        and d.front_matter.get("status") == "accepted"
+    ]
+    risks = [
+        r
+        for r in list_records(workspace, "risk")
+        if r.front_matter.get("initiative") == initiative_id
+    ]
+
+    from planledger.taskledger_render import render_taskledger_description
+
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for slice_record in plan_slices:
+        bindings = list(slice_record.front_matter.get("taskledger_bindings") or [])
+        if bindings and not update_existing:
+            skipped.append(
+                {
+                    "slice": slice_record.record_id,
+                    "reason": "already_has_binding",
+                }
+            )
+            continue
+
+        milestone_id = str(slice_record.front_matter.get("milestone"))
+        milestone = load_record(workspace, "milestone", milestone_id)
+
+        description = render_taskledger_description(
+            slice_record=slice_record,
+            plan=plan_record,
+            milestone=milestone,
+            decisions=accepted_decisions,
+            risks=risks,
+        )
+
+        if dry_run:
+            created.append(
+                {
+                    "slice": slice_record.record_id,
+                    "title": slice_record.front_matter.get("title"),
+                    "description_preview": description[:200],
+                }
+            )
+            continue
+
+        title = str(slice_record.front_matter.get("title", "Untitled slice"))
+        slug = slugify(title)
+
+        if not create_tasks:
+            skipped.append(
+                {
+                    "slice": slice_record.record_id,
+                    "reason": "create_tasks_not_set",
+                }
+            )
+            continue
+
+        try:
+            create_payload = run_taskledger_json(
+                workspace,
+                [
+                    "task",
+                    "create",
+                    title,
+                    "--slug",
+                    slug,
+                    "--description",
+                    description,
+                ],
+            )
+            task_ref, task_slug, task_status = _extract_task_ref(
+                create_payload,
+                fallback_slug=slug,
+            )
+
+            if activate_first and not created:
+                run_taskledger_json(
+                    workspace,
+                    [
+                        "task",
+                        "activate",
+                        task_ref,
+                        "--reason",
+                        f"Auto-activated from planledger push-plan {plan_id}.",
+                    ],
+                )
+
+            binding = _create_binding(
+                workspace,
+                slice_record,
+                task_ref=task_ref,
+                task_slug=task_slug,
+                task_status=task_status,
+                command_name=(
+                    f"planledger taskledger push-plan {plan_id} --create-tasks"
+                ),
+            )
+            created.append(
+                {
+                    "slice": slice_record.record_id,
+                    "task_ref": task_ref,
+                    "task_slug": task_slug,
+                    "binding": binding.record_id,
+                }
+            )
+        except PlanledgerError as exc:
+            failed.append(
+                {
+                    "slice": slice_record.record_id,
+                    "error": exc.message,
+                }
+            )
+
+    return {
+        "kind": "planledger_taskledger_push_plan",
+        "plan": plan_id,
+        "dry_run": dry_run,
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+
 def _pull_for_binding(workspace: Workspace, binding: Any) -> dict[str, Any]:
     task_ref = str(binding.front_matter.get("task_ref"))
     payload = run_taskledger_json(workspace, ["task", "show", task_ref])

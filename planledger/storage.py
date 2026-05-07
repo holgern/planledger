@@ -32,8 +32,8 @@ RECORD_DIRS: dict[str, str] = {
     "binding": "bindings",
     "review": "reviews",
     "event": "events",
+    "run": "runs",
 }
-
 ID_PREFIXES: dict[str, str] = {
     "goal": "goal",
     "initiative": "init",
@@ -48,8 +48,8 @@ ID_PREFIXES: dict[str, str] = {
     "question": "q",
     "binding": "bind",
     "event": "event",
+    "run": "run",
 }
-
 DEFAULT_NEXT_IDS: dict[str, int] = {
     "goal": 1,
     "initiative": 1,
@@ -64,8 +64,8 @@ DEFAULT_NEXT_IDS: dict[str, int] = {
     "question": 1,
     "binding": 1,
     "event": 1,
+    "run": 1,
 }
-
 PLAN_TEMPLATE = """# Plan
 
 ## Context
@@ -156,6 +156,7 @@ OPTION_TEMPLATE = """# Option
 
 ## Implementation notes
 """
+ADR_TEMPLATE = "# Architectural Decision\n\n## Context\n\n## Decision\n\n## Alternatives considered\n\n## Consequences\n\n## Follow-up\n\n## Evidence\n"
 
 
 @dataclass
@@ -321,12 +322,13 @@ def append_event(
     before: dict[str, Any] | None = None,
     after: dict[str, Any] | None = None,
     details: dict[str, Any] | None = None,
+    actor: str = "human",
 ) -> dict[str, Any]:
     event_id = allocate_id(workspace, "event")
     payload: dict[str, Any] = {
         "id": event_id,
         "timestamp": now_iso(),
-        "actor": "human",
+        "actor": actor,
         "command": command,
         "object_type": object_type,
         "object_id": object_id,
@@ -338,7 +340,10 @@ def append_event(
         payload["after"] = after
     if details is not None:
         payload["details"] = details
-    _dump_yaml(_record_path(workspace, "event", event_id, ext="yaml"), payload)
+    _dump_yaml(
+        _record_path(workspace, "event", event_id, ext="yaml"),
+        payload,
+    )
     return payload
 
 

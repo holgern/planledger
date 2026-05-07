@@ -9,10 +9,14 @@ from typing import Any
 import typer
 
 from planledger import __version__
+from planledger.backfill import backfill_apply, backfill_review
+from planledger.bundle import apply_bundle, load_bundle, validate_bundle
+from planledger.context import export_context
 from planledger.errors import PlanledgerError
 from planledger.models import AppContext, Record
 from planledger.next_action import suggest_next_action
 from planledger.storage import (
+    ADR_TEMPLATE,
     DECISION_TEMPLATE,
     OPTION_TEMPLATE,
     active_initiative,
@@ -40,6 +44,7 @@ from planledger.taskledger import (
     detect,
     generate_plan_template,
     pull_status,
+    push_plan,
     push_slice,
     reconcile,
 )
@@ -54,7 +59,10 @@ decision_app = typer.Typer(help="Decision commands")
 option_app = typer.Typer(help="Option commands")
 risk_app = typer.Typer(help="Risk commands")
 taskledger_app = typer.Typer(help="taskledger integration")
-
+bundle_app = typer.Typer(help="Bundle import")
+context_app = typer.Typer(help="Context export")
+adr_app = typer.Typer(help="Architectural Decision Records")
+backfill_app = typer.Typer(help="Existing project backfill")
 app.add_typer(goal_app, name="goal")
 app.add_typer(initiative_app, name="initiative")
 app.add_typer(plan_app, name="plan")
@@ -64,6 +72,10 @@ app.add_typer(decision_app, name="decision")
 app.add_typer(option_app, name="option")
 app.add_typer(risk_app, name="risk")
 app.add_typer(taskledger_app, name="taskledger")
+app.add_typer(bundle_app, name="bundle")
+app.add_typer(context_app, name="context")
+app.add_typer(adr_app, name="adr")
+app.add_typer(backfill_app, name="backfill")
 
 
 def _version_callback(value: bool) -> None:
@@ -302,6 +314,43 @@ def project_reindex(ctx: typer.Context) -> None:
         )
 
     _run_command(ctx, "project.reindex", execute)
+
+
+@context_app.command("export")
+def context_export(
+    ctx: typer.Context,
+    include_taskledger: bool = typer.Option(
+        False, "--include", help="Include taskledger status"
+    ),
+    include_bodies: bool = typer.Option(
+        False, "--include-bodies", help="Include record bodies"
+    ),
+    max_body_chars: int = typer.Option(
+        4000, "--max-body-chars", help="Max body chars per record"
+    ),
+    max_events: int = typer.Option(
+        0, "--max-events", help="Include last N events (0 = none)"
+    ),
+) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        result = export_context(
+            workspace,
+            include_taskledger=include_taskledger,
+            include_bodies=include_bodies,
+            max_body_chars=max_body_chars,
+            max_events=max_events,
+        )
+        active_init = result.get("active", {}).get("initiative")
+        counts = result.get("counts", {})
+        message = (
+            f"Context export: schema={result['schema']} "
+            f"active_initiative={active_init or 'none'} "
+            f"counts={counts}"
+        )
+        return result, message, []
+
+    _run_command(ctx, "context.export", execute)
 
 
 @goal_app.command("create")
@@ -1407,6 +1456,39 @@ def taskledger_reconcile(ctx: typer.Context) -> None:
     _run_command(ctx, "taskledger.reconcile", execute)
 
 
+@taskledger_app.command("push-plan")
+def taskledger_push_plan(
+    ctx: typer.Context,
+    plan_ref: str,
+    create_tasks: bool = typer.Option(False, "--create-tasks"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    activate_first: bool = typer.Option(False, "--activate-first"),
+    update_existing: bool = typer.Option(False, "--update-existing"),
+) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        result = push_plan(
+            workspace,
+            plan_ref,
+            create_tasks=create_tasks,
+            dry_run=dry_run,
+            activate_first=activate_first,
+            update_existing=update_existing,
+        )
+        created = len(result.get("created", []))
+        skipped = len(result.get("skipped", []))
+        failed = len(result.get("failed", []))
+        if dry_run:
+            message = (
+                f"Dry-run: would push {created} slices, skip {skipped}, fail {failed}."
+            )
+        else:
+            message = f"Pushed {created} slices, skipped {skipped}, failed {failed}."
+        return result, message, []
+
+    _run_command(ctx, "taskledger.push-plan", execute)
+
+
 @taskledger_app.command("plan-template")
 def taskledger_plan_template(
     ctx: typer.Context,
@@ -1423,3 +1505,250 @@ def taskledger_plan_template(
         return result, message, []
 
     _run_command(ctx, "taskledger.plan-template", execute)
+
+
+@bundle_app.command("validate")
+def bundle_validate(
+    ctx: typer.Context,
+    bundle_path: Path = typer.Option(..., "--file", help="Path to bundle JSON"),
+) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        bundle = load_bundle(bundle_path)
+        errors = validate_bundle(bundle)
+        ok = len(errors) == 0
+        result = {
+            "kind": "planledger_bundle_validate",
+            "ok": ok,
+            "errors": errors,
+        }
+        if ok:
+            message = "Bundle validation passed."
+        else:
+            message = "Bundle validation failed:\n- " + "\n- ".join(errors)
+        return result, message, []
+
+    _run_command(ctx, "bundle.validate", execute)
+
+
+@bundle_app.command("apply")
+def bundle_apply_cmd(
+    ctx: typer.Context,
+    bundle_path: Path = typer.Option(..., "--file", help="Path to bundle JSON"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        bundle = load_bundle(bundle_path)
+        apply_result = apply_bundle(
+            workspace,
+            bundle,
+            dry_run=dry_run,
+        )
+        result = {
+            "kind": "planledger_bundle_apply",
+            "dry_run": dry_run,
+            "created": apply_result.created,
+            "reused": apply_result.reused,
+            "plan_id": apply_result.plan_id,
+            "events": apply_result.events,
+        }
+        if dry_run:
+            message = (
+                f"Bundle dry-run: would create {len(apply_result.created)} records."
+            )
+        else:
+            message = (
+                f"Bundle applied: {len(apply_result.created)} created, "
+                f"{len(apply_result.reused)} reused."
+            )
+        return result, message, apply_result.events
+
+
+@adr_app.command("create")
+def adr_create(
+    ctx: typer.Context,
+    title: str,
+    initiative: str = typer.Option(..., "--initiative"),
+) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        _ = load_record(workspace, "initiative", initiative)
+        decision_id = allocate_id(workspace, "decision")
+        timestamp = now_iso()
+        front: dict[str, Any] = {
+            "id": decision_id,
+            "type": "decision",
+            "decision_type": "architecture",
+            "initiative": initiative,
+            "title": title,
+            "status": "open",
+            "chosen_option": None,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+            "accepted_at": None,
+        }
+        create_record(workspace, "decision", front, ADR_TEMPLATE)
+        event = append_event(
+            workspace,
+            command=f"planledger adr create {title} --initiative {initiative}",
+            object_type="decision",
+            object_id=decision_id,
+            event_type="created",
+            after={"title": title, "decision_type": "architecture"},
+        )
+        return (
+            {
+                "kind": "planledger_adr",
+                "id": decision_id,
+                "title": title,
+                "decision_type": "architecture",
+            },
+            f"Created ADR {decision_id}: {title}",
+            [event],
+        )
+
+    _run_command(ctx, "adr.create", execute)
+
+
+@adr_app.command("list")
+def adr_list(
+    ctx: typer.Context,
+    initiative: str | None = typer.Option(None, "--initiative"),
+) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        decisions = list_records(workspace, "decision")
+        adrs = [
+            d
+            for d in decisions
+            if d.front_matter.get("decision_type") == "architecture"
+        ]
+        if initiative is not None:
+            adrs = [d for d in adrs if d.front_matter.get("initiative") == initiative]
+        payload = [
+            {
+                "id": d.record_id,
+                "title": d.front_matter.get("title"),
+                "status": d.front_matter.get("status"),
+                "initiative": d.front_matter.get("initiative"),
+            }
+            for d in adrs
+        ]
+        lines = [f"{item['id']} {item['title']} [{item['status']}]" for item in payload]
+        return (
+            {"kind": "planledger_adr_list", "decisions": payload},
+            "\n".join(lines) or "No ADRs.",
+            [],
+        )
+
+    _run_command(ctx, "adr.list", execute)
+
+
+@adr_app.command("accept")
+def adr_accept(
+    ctx: typer.Context,
+    decision_ref: str,
+    option: str = typer.Option(..., "--option"),
+    rationale: str = typer.Option(..., "--rationale"),
+) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        decision = load_record(workspace, "decision", decision_ref)
+        if decision.front_matter.get("decision_type") != "architecture":
+            raise PlanledgerError(
+                "invalid_reference",
+                f"{decision_ref} is not an ADR.",
+                remediation=["Use planledger decision accept for non-ADR decisions."],
+            )
+        chosen_option = load_record(workspace, "option", option)
+        if chosen_option.front_matter.get("decision") != decision_ref:
+            raise PlanledgerError(
+                "invalid_reference",
+                f"Option {option} does not belong to {decision_ref}.",
+            )
+        decision.front_matter["status"] = "accepted"
+        decision.front_matter["chosen_option"] = option
+        decision.front_matter["accepted_at"] = now_iso()
+        update_record_timestamp(decision)
+        if "## Rationale" in decision.body:
+            decision.body = decision.body.rstrip() + f"\n\n{rationale}\n"
+        else:
+            decision.body = (
+                decision.body.rstrip() + f"\n\n## Rationale\n\n{rationale}\n"
+            )
+        save_record(decision)
+        event = append_event(
+            workspace,
+            command=(
+                f"planledger adr accept {decision_ref} "
+                f"--option {option} --rationale {rationale}"
+            ),
+            object_type="decision",
+            object_id=decision_ref,
+            event_type="accepted",
+            after={"chosen_option": option},
+        )
+        return (
+            {
+                "kind": "planledger_adr_accept",
+                "decision": decision_ref,
+                "chosen_option": option,
+            },
+            f"Accepted ADR {decision_ref} with option {option}",
+            [event],
+        )
+
+    _run_command(ctx, "adr.accept", execute)
+
+
+@backfill_app.command("apply")
+def backfill_apply_cmd(
+    ctx: typer.Context,
+    bundle_path: Path = typer.Option(..., "--file", help="Path to bundle JSON file"),
+    evidence: list[str] = typer.Option(
+        [], "--evidence", help="Evidence: path:reason pairs"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        parsed_evidence = []
+        for ev in evidence:
+            parts = ev.split(":", 1)
+            if len(parts) == 2:
+                parsed_evidence.append({"path": parts[0], "reason": parts[1]})
+            else:
+                parsed_evidence.append({"path": ev, "reason": ""})
+        result = backfill_apply(
+            workspace,
+            bundle_path,
+            evidence=parsed_evidence or None,
+            dry_run=dry_run,
+        )
+        message = (
+            f"Backfill {result['provenance']}: "
+            f"{len(result['created'])} created, "
+            f"{len(result['reused'])} reused."
+        )
+        return result, message, result.get("events", [])
+
+    _run_command(ctx, "backfill.apply", execute)
+
+
+@backfill_app.command("review")
+def backfill_review_cmd(ctx: typer.Context) -> None:
+    def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        workspace = _resolve_workspace(ctx)
+        result = backfill_review(workspace)
+        records = result["records"]
+        if records:
+            lines = ["Inferred records:"]
+            for r in records:
+                lines.append(f"  {r['id']} ({r['kind']}) {r['title']}")
+            message = "\n".join(lines)
+        else:
+            message = "No inferred records found."
+        return result, message, []
+
+    _run_command(ctx, "backfill.review", execute)
