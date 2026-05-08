@@ -320,7 +320,7 @@ def project_reindex(ctx: typer.Context) -> None:
 def context_export(
     ctx: typer.Context,
     include_taskledger: bool = typer.Option(
-        False, "--include", help="Include taskledger status"
+        False, "--include-taskledger", "--include", help="Include taskledger status"
     ),
     include_bodies: bool = typer.Option(
         False, "--include-bodies", help="Include record bodies"
@@ -340,6 +340,7 @@ def context_export(
             include_bodies=include_bodies,
             max_body_chars=max_body_chars,
             max_events=max_events,
+            allow_external=include_taskledger,
         )
         active_init = result.get("active", {}).get("initiative")
         counts = result.get("counts", {})

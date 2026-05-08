@@ -80,7 +80,14 @@ def _unwrap_result(payload: dict[str, Any]) -> dict[str, Any]:
 def detect(workspace: Workspace) -> dict[str, Any]:
     command, workspace_root = taskledger_settings(workspace)
     executable = shutil.which(command)
-    config_path = workspace_root / "taskledger.toml"
+    config_path = None
+    for name in (".taskledger.toml", "taskledger.toml"):
+        candidate = workspace_root / name
+        if candidate.exists():
+            config_path = candidate
+            break
+    if config_path is None:
+        config_path = workspace_root / "taskledger.toml"
 
     detected = executable is not None and config_path.exists()
     ledger_ref = None
@@ -225,7 +232,41 @@ def push_slice(
 
     title = str(slice_record.front_matter.get("title", "Untitled slice"))
     slug = slugify(title)
-    description = f"Generated from planledger {slice_id}."
+    # Load related records for rich description
+    ms_id = str(slice_record.front_matter.get("milestone", ""))
+    plan_id = str(slice_record.front_matter.get("plan", ""))
+    init_id = str(slice_record.front_matter.get("initiative", ""))
+    description_parts = [f"Generated from planledger {slice_id}."]
+    if ms_id and plan_id:
+        try:
+            from planledger.storage import load_record as _lr
+            from planledger.taskledger_render import render_taskledger_description
+
+            ms = _lr(workspace, "milestone", ms_id)
+            plan = _lr(workspace, "plan", plan_id)
+            decs = [
+                d
+                for d in list_records(workspace, "decision")
+                if d.front_matter.get("initiative") == init_id
+                and d.front_matter.get("status") == "accepted"
+            ]
+            rks = [
+                r
+                for r in list_records(workspace, "risk")
+                if r.front_matter.get("initiative") == init_id
+            ]
+            description_parts = [
+                render_taskledger_description(
+                    slice_record=slice_record,
+                    plan=plan,
+                    milestone=ms,
+                    decisions=decs,
+                    risks=rks,
+                )
+            ]
+        except Exception:
+            pass
+    description = "\n".join(description_parts)
     create_payload = run_taskledger_json(
         workspace,
         ["task", "create", title, "--slug", slug, "--description", description],
@@ -277,6 +318,14 @@ def push_plan(
     activate_first: bool = False,
     update_existing: bool = False,
 ) -> dict[str, Any]:
+    if update_existing:
+        raise PlanledgerError(
+            "unsupported",
+            "--update-existing is not implemented",
+            remediation=[
+                "Use push_plan without --update-existing.",
+            ],
+        )
     plan_record = load_record(workspace, "plan", plan_id)
     initiative_id = str(plan_record.front_matter.get("initiative"))
 
@@ -629,23 +678,38 @@ def generate_plan_template(
             "",
             "## Implementation todos",
             "",
-            "- Add taskledger detection.",
-            "- Add task creation adapter.",
-            "- Add status pull/reconcile.",
+        ]
+    )
+    for step in slice_record.front_matter.get("implementation_steps", []):
+        lines.append(f"- {step}")
+    if not slice_record.front_matter.get("implementation_steps"):
+        lines.append("- Implement slice objective.")
+
+    lines.extend(
+        [
             "",
             "## Acceptance criteria",
             "",
-            "- Can bind a planledger slice to a taskledger task.",
-            "- Can pull task status from taskledger.",
-            "- Can detect stale or missing bindings.",
+        ]
+    )
+    for criterion in slice_record.front_matter.get("acceptance_criteria", []):
+        lines.append(f"- {criterion}")
+    if not slice_record.front_matter.get("acceptance_criteria"):
+        lines.append("- Slice meets objective.")
+
+    lines.extend(
+        [
             "",
             "## Validation hints",
             "",
-            "- Run unit tests for taskledger integration.",
-            "- Run CLI smoke tests with a temporary workspace.",
-            "",
         ]
     )
+    for cmd in slice_record.front_matter.get("validation_commands", []):
+        lines.append(f"- `{cmd}`")
+    if not slice_record.front_matter.get("validation_commands"):
+        lines.append("- Run tests.")
+
+    lines.append("")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines), encoding="utf-8")

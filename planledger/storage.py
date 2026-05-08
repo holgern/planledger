@@ -323,6 +323,8 @@ def append_event(
     after: dict[str, Any] | None = None,
     details: dict[str, Any] | None = None,
     actor: str = "human",
+    source_run: str | None = None,
+    provenance: str | None = None,
 ) -> dict[str, Any]:
     event_id = allocate_id(workspace, "event")
     payload: dict[str, Any] = {
@@ -340,11 +342,33 @@ def append_event(
         payload["after"] = after
     if details is not None:
         payload["details"] = details
+    if source_run is not None:
+        payload["source_run"] = source_run
+    if provenance is not None:
+        payload["provenance"] = provenance
     _dump_yaml(
         _record_path(workspace, "event", event_id, ext="yaml"),
         payload,
     )
     return payload
+
+
+def list_events(
+    workspace: Workspace,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    events_dir = workspace.ledger_dir / "events"
+    if not events_dir.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    paths = sorted(events_dir.glob("*.yaml"))
+    if limit is not None:
+        paths = paths[-limit:]
+    for path in paths:
+        data = _load_yaml(path)
+        data["_path"] = str(path)
+        events.append(data)
+    return events
 
 
 def write_config(

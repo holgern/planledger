@@ -5,10 +5,9 @@ from typing import Any
 from planledger.models import Workspace
 from planledger.next_action import suggest_next_action
 from planledger.storage import (
-    RECORD_DIRS,
-    _load_yaml,
     active_initiative,
     latest_plan_for_initiative,
+    list_events,
     list_records,
     load_record,
     record_counts,
@@ -40,6 +39,7 @@ def export_context(
     include_bodies: bool = False,
     max_body_chars: int = 4000,
     max_events: int = 0,
+    allow_external: bool = False,
 ) -> dict[str, Any]:
     project_config = workspace.config.get("project", {})
 
@@ -171,20 +171,18 @@ def export_context(
             result["taskledger"] = {"detected": False}
 
     if max_events > 0:
-        event_dir = workspace.ledger_dir / RECORD_DIRS["event"]
-        event_records: list[dict[str, Any]] = []
-        if event_dir.exists():
-            for yaml_path in sorted(event_dir.glob("*.yaml")):
-                data = _load_yaml(yaml_path)
-                event_records.append(data)
-        recent = (
-            event_records[-max_events:]
-            if len(event_records) > max_events
-            else event_records
-        )
-        result["recent_events"] = recent
-
+        events = list_events(workspace, limit=max_events)
+        if events:
+            result["recent_events"] = events
     result["counts"] = record_counts(workspace)
-    result["next_action"] = suggest_next_action(workspace)
+    if allow_external:
+        result["next_action"] = suggest_next_action(workspace)
+    else:
+        result["next_action"] = {
+            "kind": "planledger_next_action",
+            "action": "inspect-status",
+            "next_command": "planledger status --full",
+            "note": "allow_external=False; full next action skipped",
+        }
 
     return result

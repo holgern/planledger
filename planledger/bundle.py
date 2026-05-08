@@ -12,13 +12,22 @@ from planledger.storage import (
     append_event,
     create_record,
     list_records,
+    load_record,
     now_iso,
+    save_record,
 )
 
 
 def load_bundle(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise PlanledgerError(
+            "invalid_bundle",
+            f"Bundle is not valid JSON: {exc}",
+            remediation=[f"Inspect: {path}"],
+        ) from exc
     if not isinstance(data, dict):
         raise PlanledgerError(
             "invalid_bundle",
@@ -102,10 +111,20 @@ def _find_existing_by_title(
     workspace: Workspace,
     kind: str,
     title: str,
+    *,
+    goal_id: str | None = None,
+    initiative_id: str | None = None,
 ) -> str | None:
     for record in list_records(workspace, kind):
-        if record.front_matter.get("title") == title:
-            return record.record_id
+        if record.front_matter.get("title") != title:
+            continue
+        if goal_id is not None and record.front_matter.get("goal") != goal_id:
+            continue
+        if initiative_id is not None and (
+            record.front_matter.get("initiative") != initiative_id
+        ):
+            continue
+        return record.record_id
     return None
 
 
@@ -118,20 +137,18 @@ class BundleApplyResult:
     plan_id: str | None = None
 
 
-def apply_bundle(
-    workspace: Workspace,
-    bundle: dict[str, Any],
-    *,
-    dry_run: bool = False,
-    actor: str = "agent",
-    provenance: str = "agent-generated",
-) -> BundleApplyResult:
-    result = BundleApplyResult()
-    timestamp = now_iso()
+@dataclass
+class _ApplyCtx:
+    workspace: Workspace
+    run_id: str = ""
+    timestamp: str = ""
+    actor: str = "agent"
+    provenance: str = "agent-generated"
+    source_context: list[dict[str, str]] = field(default_factory=list)
+    result: BundleApplyResult = field(default_factory=BundleApplyResult)
 
-    if dry_run:
-        return result
 
+def _validate_or_raise(bundle: dict[str, Any]) -> None:
     errors = validate_bundle(bundle)
     if errors:
         raise PlanledgerError(
@@ -140,138 +157,125 @@ def apply_bundle(
             remediation=errors,
         )
 
-    request_data = bundle.get("request", {})
 
-    run_id = allocate_id(workspace, "run")
-    run_front: dict[str, Any] = {
-        "id": run_id,
-        "type": "run",
-        "actor": actor,
-        "harness": None,
-        "skill_version": None,
-        "user_request": request_data.get("title", ""),
-        "planning_mode": request_data.get("planning_mode", "full"),
-        "provenance": provenance,
-        "source_context": [],
-        "created_records": [],
-        "created_at": timestamp,
-        "updated_at": timestamp,
+def _resolve_goal(
+    ctx: _ApplyCtx,
+    goal_data: dict[str, Any],
+) -> str | None:
+    title = goal_data.get("title", "")
+    existing = _find_existing_by_title(ctx.workspace, "goal", title)
+    if existing and goal_data.get("reuse") == "active-or-create":
+        ctx.result.reused.append({"kind": "goal", "id": existing})
+        return existing
+    goal_id = allocate_id(ctx.workspace, "goal")
+    goal_front = {
+        "id": goal_id,
+        "type": "goal",
+        "title": title,
+        "status": "active",
+        "horizon": "quarter",
+        "priority": "high",
+        "success_metrics": [],
+        "source_run": ctx.run_id,
+        "provenance": ctx.provenance,
+        "created_at": ctx.timestamp,
+        "updated_at": ctx.timestamp,
     }
-    create_record(workspace, "run", run_front, "")
-    result.created.append({"kind": "run", "id": run_id})
+    create_record(ctx.workspace, "goal", goal_front, "")
+    ctx.result.created.append({"kind": "goal", "id": goal_id})
+    return goal_id
 
-    goal_data = bundle.get("goal", {})
-    goal_id = None
-    if goal_data:
-        reuse_mode = goal_data.get("reuse", "")
-        title = goal_data.get("title", "")
-        existing = _find_existing_by_title(workspace, "goal", title)
-        if existing and reuse_mode == "active-or-create":
-            goal_id = existing
-            result.reused.append({"kind": "goal", "id": goal_id})
-        else:
-            goal_id = allocate_id(workspace, "goal")
-            goal_front = {
-                "id": goal_id,
-                "type": "goal",
-                "title": title,
-                "status": "active",
-                "horizon": "quarter",
-                "priority": "high",
-                "success_metrics": [],
-                "source_run": run_id,
-                "provenance": provenance,
-                "created_at": timestamp,
-                "updated_at": timestamp,
-            }
-            create_record(workspace, "goal", goal_front, "")
-            result.created.append({"kind": "goal", "id": goal_id})
 
-    init_data = bundle.get("initiative", {})
-    init_id = None
-    if init_data:
-        reuse_mode = init_data.get("reuse", "")
-        title = init_data.get("title", "")
-        existing = _find_existing_by_title(
-            workspace,
-            "initiative",
-            title,
-        )
-        if existing and reuse_mode == "active-or-create":
-            init_id = existing
-            result.reused.append({"kind": "initiative", "id": init_id})
-        else:
-            init_id = allocate_id(workspace, "initiative")
-            init_front = {
-                "id": init_id,
-                "type": "initiative",
-                "goal": goal_id,
-                "title": title,
-                "status": "shaping",
-                "owner": actor,
-                "priority": "high",
-                "active": False,
-                "source_run": run_id,
-                "provenance": provenance,
-                "created_at": timestamp,
-                "updated_at": timestamp,
-            }
-            create_record(workspace, "initiative", init_front, "")
-            result.created.append({"kind": "initiative", "id": init_id})
+def _resolve_initiative(
+    ctx: _ApplyCtx,
+    init_data: dict[str, Any],
+    goal_id: str | None,
+) -> str | None:
+    title = init_data.get("title", "")
+    existing = _find_existing_by_title(ctx.workspace, "initiative", title)
+    if existing and init_data.get("reuse") == "active-or-create":
+        ctx.result.reused.append({"kind": "initiative", "id": existing})
+        return existing
+    init_id = allocate_id(ctx.workspace, "initiative")
+    init_front = {
+        "id": init_id,
+        "type": "initiative",
+        "goal": goal_id,
+        "title": title,
+        "status": "shaping",
+        "owner": ctx.actor,
+        "priority": "high",
+        "active": False,
+        "source_run": ctx.run_id,
+        "provenance": ctx.provenance,
+        "created_at": ctx.timestamp,
+        "updated_at": ctx.timestamp,
+    }
+    create_record(ctx.workspace, "initiative", init_front, "")
+    ctx.result.created.append({"kind": "initiative", "id": init_id})
+    return init_id
 
-    plan_data = bundle.get("plan", {})
-    plan_id = None
-    if plan_data and init_id:
-        plan_id = allocate_id(workspace, "plan")
-        plan_body_parts = [
-            f"# Plan: {plan_data.get('title', '')}",
-            "",
-            "## Context",
-            "",
-        ]
-        for ctx_line in plan_data.get("context", []):
-            plan_body_parts.append(f"- {ctx_line}")
-        plan_body_parts.append("")
-        plan_body_parts.append("## Objectives")
-        plan_body_parts.append("")
-        for obj in plan_data.get("objectives", []):
-            plan_body_parts.append(f"- {obj}")
-        plan_body_parts.append("")
-        if plan_data.get("non_goals"):
-            plan_body_parts.append("## Non-goals")
-            plan_body_parts.append("")
-            for ng in plan_data["non_goals"]:
-                plan_body_parts.append(f"- {ng}")
-            plan_body_parts.append("")
 
-        plan_body = "\n".join(plan_body_parts)
-        plan_front = {
-            "id": plan_id,
-            "type": "plan",
-            "goal": goal_id,
-            "initiative": init_id,
-            "version": 1,
-            "status": "draft",
-            "supersedes": None,
-            "accepted_at": None,
-            "accepted_by": None,
-            "source_run": run_id,
-            "provenance": provenance,
-            "created_at": timestamp,
-            "updated_at": timestamp,
-        }
-        create_record(workspace, "plan", plan_front, plan_body)
-        result.created.append({"kind": "plan", "id": plan_id})
-        result.plan_id = plan_id
+def _create_plan(
+    ctx: _ApplyCtx,
+    plan_data: dict[str, Any],
+    goal_id: str | None,
+    init_id: str | None,
+) -> None:
+    if not plan_data or not init_id:
+        return
+    plan_id = allocate_id(ctx.workspace, "plan")
+    body_parts = [
+        f"# Plan: {plan_data.get('title', '')}",
+        "",
+        "## Context",
+        "",
+    ]
+    for ctx_line in plan_data.get("context", []):
+        body_parts.append(f"- {ctx_line}")
+    body_parts.extend(["", "## Objectives", ""])
+    for obj in plan_data.get("objectives", []):
+        body_parts.append(f"- {obj}")
+    body_parts.append("")
+    if plan_data.get("non_goals"):
+        body_parts.extend(["## Non-goals", ""])
+        for ng in plan_data["non_goals"]:
+            body_parts.append(f"- {ng}")
+        body_parts.append("")
+    plan_body = "\n".join(body_parts)
+    plan_front = {
+        "id": plan_id,
+        "type": "plan",
+        "goal": goal_id,
+        "initiative": init_id,
+        "version": 1,
+        "status": "draft",
+        "supersedes": None,
+        "accepted_at": None,
+        "accepted_by": None,
+        "source_run": ctx.run_id,
+        "provenance": ctx.provenance,
+        "created_at": ctx.timestamp,
+        "updated_at": ctx.timestamp,
+    }
+    create_record(ctx.workspace, "plan", plan_front, plan_body)
+    ctx.result.created.append({"kind": "plan", "id": plan_id})
+    ctx.result.plan_id = plan_id
 
-    created_record_ids: list[str] = [r["id"] for r in result.created]
 
-    milestones_data = bundle.get("milestones", [])
+def _create_milestones_and_slices(
+    ctx: _ApplyCtx,
+    milestones_data: list[dict[str, Any]],
+    init_id: str | None,
+    plan_id: str | None,
+) -> list[str]:
+    created_ids: list[str] = []
     milestone_order = 10
+    ws = ctx.workspace
     for ms_data in milestones_data:
         if not isinstance(ms_data, dict):
             continue
-        ms_id = allocate_id(workspace, "milestone")
+        ms_id = allocate_id(ws, "milestone")
         ms_front = {
             "id": ms_id,
             "type": "milestone",
@@ -282,76 +286,95 @@ def apply_bundle(
             "order": milestone_order,
             "target": None,
             "exit_criteria": [],
-            "source_run": run_id,
-            "created_at": timestamp,
-            "updated_at": timestamp,
+            "source_run": ctx.run_id,
+            "created_at": ctx.timestamp,
+            "updated_at": ctx.timestamp,
         }
-        create_record(workspace, "milestone", ms_front, "")
-        result.created.append({"kind": "milestone", "id": ms_id})
-        created_record_ids.append(ms_id)
+        create_record(ws, "milestone", ms_front, "")
+        ctx.result.created.append({"kind": "milestone", "id": ms_id})
+        created_ids.append(ms_id)
         milestone_order += 10
-
         for sl_data in ms_data.get("slices", []):
-            if not isinstance(sl_data, dict):
-                continue
-            ext_key = sl_data.get("key")
-            existing_slice = None
-            if ext_key and init_id:
-                existing_slice = _find_existing_by_key(
-                    workspace,
-                    "slice",
-                    init_id,
-                    ext_key,
-                )
-            if existing_slice:
-                result.reused.append({"kind": "slice", "id": existing_slice})
-                continue
+            sl_id = _create_slice(
+                ctx,
+                sl_data,
+                init_id,
+                plan_id,
+                ms_id,
+            )
+            if sl_id:
+                created_ids.append(sl_id)
+    return created_ids
 
-            sl_id = allocate_id(workspace, "slice")
-            sl_front: dict[str, Any] = {
-                "id": sl_id,
-                "type": "slice",
-                "initiative": init_id,
-                "plan": plan_id,
-                "milestone": ms_id,
-                "title": sl_data.get("title", ""),
-                "status": "shaping",
-                "priority": "high",
-                "size": "M",
-                "risk": "medium",
-                "depends_on": [],
-                "blocked_by": [],
-                "taskledger_bindings": [],
-                "source_run": run_id,
-                "provenance": provenance,
-                "created_at": timestamp,
-                "updated_at": timestamp,
-            }
-            if ext_key:
-                sl_front["external_key"] = ext_key
-            if sl_data.get("objective"):
-                sl_front["objective"] = sl_data["objective"]
-            if sl_data.get("target_files"):
-                sl_front["target_files"] = sl_data["target_files"]
-            if sl_data.get("implementation_steps"):
-                sl_front["implementation_steps"] = sl_data["implementation_steps"]
-            if sl_data.get("acceptance_criteria"):
-                sl_front["acceptance_criteria"] = sl_data["acceptance_criteria"]
-            if sl_data.get("validation_commands"):
-                sl_front["validation_commands"] = sl_data["validation_commands"]
-            if sl_data.get("ready_for_taskledger"):
-                sl_front["ready_for_taskledger"] = True
-                sl_front["status"] = "ready-for-execution"
-            create_record(workspace, "slice", sl_front, "")
-            result.created.append({"kind": "slice", "id": sl_id})
-            created_record_ids.append(sl_id)
 
-    decisions_data = bundle.get("decisions", [])
+def _create_slice(
+    ctx: _ApplyCtx,
+    sl_data: dict[str, Any],
+    init_id: str | None,
+    plan_id: str | None,
+    ms_id: str,
+) -> str | None:
+    if not isinstance(sl_data, dict):
+        return None
+    ws = ctx.workspace
+    ext_key = sl_data.get("key")
+    if ext_key and init_id:
+        existing = _find_existing_by_key(ws, "slice", init_id, ext_key)
+        if existing:
+            ctx.result.reused.append({"kind": "slice", "id": existing})
+            return None
+    sl_id = allocate_id(ws, "slice")
+    sl_front: dict[str, Any] = {
+        "id": sl_id,
+        "type": "slice",
+        "initiative": init_id,
+        "plan": plan_id,
+        "milestone": ms_id,
+        "title": sl_data.get("title", ""),
+        "status": "shaping",
+        "priority": "high",
+        "size": "M",
+        "risk": "medium",
+        "depends_on": [],
+        "blocked_by": [],
+        "taskledger_bindings": [],
+        "source_run": ctx.run_id,
+        "provenance": ctx.provenance,
+        "created_at": ctx.timestamp,
+        "updated_at": ctx.timestamp,
+    }
+    if ext_key:
+        sl_front["external_key"] = ext_key
+    for fname in (
+        "objective",
+        "target_files",
+        "implementation_steps",
+        "acceptance_criteria",
+        "validation_commands",
+    ):
+        if sl_data.get(fname):
+            sl_front[fname] = sl_data[fname]
+    if sl_data.get("ready_for_taskledger"):
+        sl_front["ready_for_taskledger"] = True
+        sl_front["status"] = "ready-for-execution"
+    create_record(ws, "slice", sl_front, "")
+    ctx.result.created.append({"kind": "slice", "id": sl_id})
+    return sl_id
+
+
+def _create_decisions_and_options(
+    ctx: _ApplyCtx,
+    decisions_data: list[dict[str, Any]],
+    init_id: str | None,
+    plan_id: str | None,
+) -> list[str]:
+    created_ids: list[str] = []
+    ws = ctx.workspace
     for dec_data in decisions_data:
         if not isinstance(dec_data, dict):
             continue
-        dec_id = allocate_id(workspace, "decision")
-        dec_front = {
+        dec_id = allocate_id(ws, "decision")
+        dec_front: dict[str, Any] = {
             "id": dec_id,
             "type": "decision",
             "initiative": init_id,
@@ -360,55 +383,78 @@ def apply_bundle(
             "status": dec_data.get("status", "open"),
             "chosen_option": None,
             "decision_type": dec_data.get("decision_type"),
-            "source_run": run_id,
-            "provenance": provenance,
-            "created_at": timestamp,
-            "updated_at": timestamp,
+            "source_run": ctx.run_id,
+            "provenance": ctx.provenance,
+            "created_at": ctx.timestamp,
+            "updated_at": ctx.timestamp,
             "accepted_at": None,
         }
         body = "# Decision\n\n## Context\n\n## Rationale\n\n"
         rationale = dec_data.get("rationale")
         if rationale:
             body += f"{rationale}\n"
-        create_record(workspace, "decision", dec_front, body)
-        result.created.append({"kind": "decision", "id": dec_id})
-        created_record_ids.append(dec_id)
 
+        # Build option id map before writing decision
+        option_ids_by_title: dict[str, str] = {}
         for opt_data in dec_data.get("options", []):
             if not isinstance(opt_data, dict):
                 continue
-            opt_id = allocate_id(workspace, "option")
+            opt_id = allocate_id(ws, "option")
+            opt_title = str(opt_data.get("title", ""))
+            option_ids_by_title[opt_title] = opt_id
             opt_front = {
                 "id": opt_id,
                 "type": "option",
                 "decision": dec_id,
                 "title": opt_data.get("title", ""),
                 "status": opt_data.get("status", "candidate"),
-                "source_run": run_id,
-                "created_at": timestamp,
-                "updated_at": timestamp,
+                "source_run": ctx.run_id,
+                "created_at": ctx.timestamp,
+                "updated_at": ctx.timestamp,
             }
-            create_record(workspace, "option", opt_front, "")
-            result.created.append({"kind": "option", "id": opt_id})
-            created_record_ids.append(opt_id)
+            create_record(ws, "option", opt_front, "")
+            ctx.result.created.append(
+                {
+                    "kind": "option",
+                    "id": opt_id,
+                    "title": opt_data.get("title", ""),
+                }
+            )
+            created_ids.append(opt_id)
 
+        # Set chosen_option and accepted_at if accepted
         if dec_data.get("status") == "accepted" and dec_data.get("options"):
-            accepted_opts = [
-                o for o in dec_data["options"] if o.get("status") == "accepted"
-            ]
-            if accepted_opts:
-                for r in result.created:
-                    if r["kind"] == "option" and r.get("title") == accepted_opts[0].get(
-                        "title"
-                    ):
-                        dec_front["chosen_option"] = r["id"]
-                        break
+            accepted = next(
+                (
+                    o
+                    for o in dec_data["options"]
+                    if isinstance(o, dict) and o.get("status") == "accepted"
+                ),
+                None,
+            )
+            if accepted:
+                dec_front["chosen_option"] = option_ids_by_title.get(
+                    str(accepted.get("title", ""))
+                )
+                dec_front["accepted_at"] = ctx.timestamp
 
-    risks_data = bundle.get("risks", [])
+        create_record(ws, "decision", dec_front, body)
+        ctx.result.created.append({"kind": "decision", "id": dec_id})
+        created_ids.append(dec_id)
+    return created_ids
+
+
+def _create_risks(
+    ctx: _ApplyCtx,
+    risks_data: list[dict[str, Any]],
+    init_id: str | None,
+) -> list[str]:
+    created_ids: list[str] = []
+    ws = ctx.workspace
     for risk_data in risks_data:
         if not isinstance(risk_data, dict):
             continue
-        risk_id = allocate_id(workspace, "risk")
+        risk_id = allocate_id(ws, "risk")
         risk_front = {
             "id": risk_id,
             "type": "risk",
@@ -418,34 +464,217 @@ def apply_bundle(
             "likelihood": risk_data.get("likelihood", "medium"),
             "impact": risk_data.get("impact", "medium"),
             "mitigation": risk_data.get("mitigation", ""),
-            "source_run": run_id,
-            "provenance": provenance,
-            "created_at": timestamp,
-            "updated_at": timestamp,
+            "source_run": ctx.run_id,
+            "provenance": ctx.provenance,
+            "created_at": ctx.timestamp,
+            "updated_at": ctx.timestamp,
         }
-        create_record(workspace, "risk", risk_front, "")
-        result.created.append({"kind": "risk", "id": risk_id})
-        created_record_ids.append(risk_id)
+        create_record(ws, "risk", risk_front, "")
+        ctx.result.created.append({"kind": "risk", "id": risk_id})
+        created_ids.append(risk_id)
+    return created_ids
 
-    if created_record_ids:
-        from planledger.storage import load_record, save_record
 
-        run_record = load_record(workspace, "run", run_id)
-        run_record.front_matter["created_records"] = created_record_ids
+def apply_bundle(
+    workspace: Workspace,
+    bundle: dict[str, Any],
+    *,
+    dry_run: bool = False,
+    actor: str = "agent",
+    provenance: str = "agent-generated",
+    evidence: list[dict[str, str]] | None = None,
+) -> BundleApplyResult:
+    _validate_or_raise(bundle)
+    if dry_run:
+        return _preview_bundle(
+            workspace,
+            bundle,
+            actor=actor,
+            provenance=provenance,
+        )
+    ctx = _ApplyCtx(
+        workspace=workspace,
+        timestamp=now_iso(),
+        actor=actor,
+        provenance=provenance,
+        source_context=evidence or [],
+    )
+    run_front: dict[str, Any] = {
+        "id": "",
+        "type": "run",
+        "actor": actor,
+        "harness": None,
+        "skill_version": None,
+        "user_request": bundle.get("request", {}).get("title", ""),
+        "planning_mode": (bundle.get("request", {}).get("planning_mode", "full")),
+        "provenance": provenance,
+        "source_context": ctx.source_context,
+        "created_records": [],
+        "created_at": ctx.timestamp,
+        "updated_at": ctx.timestamp,
+    }
+    ctx.run_id = allocate_id(workspace, "run")
+    run_front["id"] = ctx.run_id
+    create_record(workspace, "run", run_front, "")
+    ctx.result.created.append({"kind": "run", "id": ctx.run_id})
+
+    goal_id = _resolve_goal(ctx, bundle.get("goal", {}))
+    init_id = _resolve_initiative(ctx, bundle.get("initiative", {}), goal_id)
+    _create_plan(ctx, bundle.get("plan", {}), goal_id, init_id)
+    plan_id = ctx.result.plan_id
+    ms_ids = _create_milestones_and_slices(
+        ctx,
+        bundle.get("milestones", []),
+        init_id,
+        plan_id,
+    )
+    dec_ids = _create_decisions_and_options(
+        ctx,
+        bundle.get("decisions", []),
+        init_id,
+        plan_id,
+    )
+    risk_ids = _create_risks(ctx, bundle.get("risks", []), init_id)
+    all_created = [r["id"] for r in ctx.result.created] + ms_ids + dec_ids + risk_ids
+    if all_created:
+        run_record = load_record(workspace, "run", ctx.run_id)
+        run_record.front_matter["created_records"] = all_created
+        run_record.front_matter["source_context"] = ctx.source_context
         save_record(run_record)
 
     evt = append_event(
         workspace,
         command="planledger bundle apply",
         object_type="run",
-        object_id=run_id,
+        object_id=ctx.run_id,
         event_type="bundle_applied",
         after={
-            "created": len(result.created),
-            "reused": len(result.reused),
+            "created": len(ctx.result.created),
+            "reused": len(ctx.result.reused),
         },
         actor=actor,
     )
-    result.events.append(evt)
+    ctx.result.events.append(evt)
+    return ctx.result
+
+
+def _preview_bundle(
+    workspace: Workspace,
+    bundle: dict[str, Any],
+    *,
+    actor: str = "agent",
+    provenance: str = "agent-generated",
+) -> BundleApplyResult:
+    """Compute what apply_bundle would create without writing anything."""
+    result = BundleApplyResult()
+
+    # Simulate goal
+    goal_data = bundle.get("goal", {})
+    if goal_data:
+        title = goal_data.get("title", "")
+        existing = _find_existing_by_title(workspace, "goal", title)
+        if existing and goal_data.get("reuse") == "active-or-create":
+            result.reused.append(
+                {
+                    "kind": "goal",
+                    "id": existing,
+                    "title": title,
+                }
+            )
+        else:
+            result.created.append(
+                {
+                    "kind": "goal",
+                    "id": "goal-preview",
+                    "title": title,
+                }
+            )
+
+    # Simulate initiative
+    init_data = bundle.get("initiative", {})
+    if init_data:
+        title = init_data.get("title", "")
+        existing = _find_existing_by_title(workspace, "initiative", title)
+        if existing and init_data.get("reuse") == "active-or-create":
+            result.reused.append(
+                {
+                    "kind": "initiative",
+                    "id": existing,
+                    "title": title,
+                }
+            )
+        else:
+            result.created.append(
+                {
+                    "kind": "initiative",
+                    "id": "init-preview",
+                    "title": title,
+                }
+            )
+
+    # Simulate plan
+    plan_data = bundle.get("plan", {})
+    if plan_data:
+        result.created.append(
+            {
+                "kind": "plan",
+                "title": plan_data.get("title", ""),
+            }
+        )
+        result.plan_id = "plan-preview"
+
+    # Simulate milestones and slices
+    for ms_data in bundle.get("milestones", []):
+        if not isinstance(ms_data, dict):
+            continue
+        result.created.append(
+            {
+                "kind": "milestone",
+                "title": ms_data.get("title", ""),
+            }
+        )
+        for sl_data in ms_data.get("slices", []):
+            if not isinstance(sl_data, dict):
+                continue
+            result.created.append(
+                {
+                    "kind": "slice",
+                    "title": sl_data.get("title", ""),
+                }
+            )
+
+    # Simulate decisions and options
+    for dec_data in bundle.get("decisions", []):
+        if not isinstance(dec_data, dict):
+            continue
+        result.created.append(
+            {
+                "kind": "decision",
+                "title": dec_data.get("title", ""),
+            }
+        )
+        for opt_data in dec_data.get("options", []):
+            if not isinstance(opt_data, dict):
+                continue
+            result.created.append(
+                {
+                    "kind": "option",
+                    "title": opt_data.get("title", ""),
+                }
+            )
+
+    # Simulate risks
+    for risk_data in bundle.get("risks", []):
+        if not isinstance(risk_data, dict):
+            continue
+        result.created.append(
+            {
+                "kind": "risk",
+                "title": risk_data.get("title", ""),
+            }
+        )
+
+    # Simulate run
+    result.created.insert(0, {"kind": "run", "title": "preview"})
 
     return result

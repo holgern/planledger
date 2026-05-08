@@ -1,4 +1,13 @@
 ---
+name: planledger
+description: Use planledger as a hidden durable planning control plane. The human does not need to read plan Markdown.
+license: Apache-2.0
+compatibility: opencode
+metadata:
+  audience: coding-agents
+  workflow: task-management
+---
+
 skill_version: planledger-skill-v1
 ---
 

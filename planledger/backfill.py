@@ -34,6 +34,7 @@ def backfill_apply(
         bundle,
         dry_run=dry_run,
         provenance=provenance,
+        evidence=evidence,
     )
 
     return {
