@@ -37,59 +37,348 @@ def load_bundle(path: Path) -> dict[str, Any]:
     return data
 
 
-def validate_bundle(bundle: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
+ALLOWED_TOP_LEVEL_FIELDS = {
+    "schema",
+    "request",
+    "goal",
+    "initiative",
+    "plan",
+    "milestones",
+    "decisions",
+    "risks",
+}
+ALLOWED_DECISION_STATUSES = {"open", "accepted", "rejected"}
+ALLOWED_OPTION_STATUSES = {"candidate", "accepted", "rejected"}
+ALLOWED_RISK_LEVELS = {"low", "medium", "high"}
+_PREVIEW_NEW_GOAL_SCOPE = "__preview_new_goal__"
+
+
+@dataclass
+class BundleValidationDetails:
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class BundleSliceModel:
+    key: str | None
+    title: str
+    objective: str | None
+    target_files: list[str]
+    implementation_steps: list[str]
+    acceptance_criteria: list[str]
+    validation_commands: list[str]
+    ready_for_taskledger: bool
+
+
+@dataclass
+class BundleMilestoneModel:
+    title: str
+    slices: list[BundleSliceModel]
+
+
+@dataclass
+class BundleOptionModel:
+    title: str
+    status: str
+
+
+@dataclass
+class BundleDecisionModel:
+    title: str
+    status: str
+    decision_type: str | None
+    rationale: str | None
+    options: list[BundleOptionModel]
+
+
+@dataclass
+class BundleRiskModel:
+    title: str
+    impact: str
+    likelihood: str
+    mitigation: str
+
+
+def _is_non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _string_list(value: Any, *, field_name: str, errors: list[str]) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        errors.append(f"'{field_name}' must be a list of strings.")
+        return []
+    cleaned: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            errors.append(f"'{field_name}[{idx}]' must be a string.")
+            continue
+        cleaned.append(item)
+    return cleaned
+
+
+def _validate_top_level_fields(
+    bundle: dict[str, Any],
+    details: BundleValidationDetails,
+    *,
+    strict_unknown_fields: bool,
+) -> None:
+    unknown = sorted(set(bundle) - ALLOWED_TOP_LEVEL_FIELDS)
+    if not unknown:
+        return
+    for field in unknown:
+        message = f"Unknown top-level field: {field!r}."
+        if strict_unknown_fields:
+            details.errors.append(message)
+        else:
+            details.warnings.append(message)
+
+
+def validate_bundle_details(
+    bundle: dict[str, Any],
+    *,
+    strict_unknown_fields: bool = False,
+) -> BundleValidationDetails:
+    details = BundleValidationDetails()
+    _validate_top_level_fields(
+        bundle,
+        details,
+        strict_unknown_fields=strict_unknown_fields,
+    )
 
     schema = bundle.get("schema")
     if schema != "planledger.plan_bundle.v1":
-        errors.append(
-            f"Missing or invalid schema: expected "
+        details.errors.append(
+            "Missing or invalid schema: expected "
             f"'planledger.plan_bundle.v1', got {schema!r}."
         )
 
-    plan_data = bundle.get("plan")
-    if not isinstance(plan_data, dict):
-        errors.append("Missing or invalid 'plan' section.")
-    else:
-        if not plan_data.get("title"):
-            errors.append("Plan title is required.")
-        if not plan_data.get("objectives"):
-            errors.append("Plan objectives are required.")
-
     request_data = bundle.get("request")
     if not isinstance(request_data, dict):
-        errors.append("Missing or invalid 'request' section.")
+        details.errors.append("Missing or invalid 'request' section.")
+    elif not _is_non_empty_string(request_data.get("title")):
+        details.errors.append("request.title is required.")
 
+    plan_data = bundle.get("plan")
+    if not isinstance(plan_data, dict):
+        details.errors.append("Missing or invalid 'plan' section.")
+    else:
+        if not _is_non_empty_string(plan_data.get("title")):
+            details.errors.append("Plan title is required.")
+        objectives = _string_list(
+            plan_data.get("objectives"),
+            field_name="plan.objectives",
+            errors=details.errors,
+        )
+        if not objectives:
+            details.errors.append("Plan objectives are required.")
+
+    seen_slice_keys: set[str] = set()
     milestones = bundle.get("milestones")
     if milestones is not None:
         if not isinstance(milestones, list):
-            errors.append("'milestones' must be a list.")
+            details.errors.append("'milestones' must be a list.")
         else:
             for i, ms in enumerate(milestones):
                 if not isinstance(ms, dict):
-                    errors.append(f"Milestone {i} must be an object.")
+                    details.errors.append(f"Milestone {i} must be an object.")
                     continue
-                if not ms.get("title"):
-                    errors.append(f"Milestone {i} missing title.")
+                if not _is_non_empty_string(ms.get("title")):
+                    details.errors.append(f"Milestone {i} missing title.")
                 slices = ms.get("slices", [])
+                if not isinstance(slices, list):
+                    details.errors.append(f"Milestone {i} 'slices' must be a list.")
+                    continue
                 for j, sl in enumerate(slices):
                     if not isinstance(sl, dict):
-                        errors.append(f"Milestone {i} slice {j} must be an object.")
+                        details.errors.append(f"Milestone {i} slice {j} must be an object.")
                         continue
-                    if not sl.get("title"):
-                        errors.append(f"Milestone {i} slice {j} missing title.")
+                    if not _is_non_empty_string(sl.get("title")):
+                        details.errors.append(f"Milestone {i} slice {j} missing title.")
+                    key = sl.get("key")
+                    if key is not None:
+                        if not _is_non_empty_string(key):
+                            details.errors.append(
+                                f"Milestone {i} slice {j} key must be a non-empty string."
+                            )
+                        elif key in seen_slice_keys:
+                            details.errors.append(f"Duplicate slice key detected: {key!r}.")
+                        else:
+                            seen_slice_keys.add(key)
+                    if sl.get("ready_for_taskledger") is True:
+                        required_lists = (
+                            ("target_files", sl.get("target_files")),
+                            ("implementation_steps", sl.get("implementation_steps")),
+                            ("acceptance_criteria", sl.get("acceptance_criteria")),
+                            ("validation_commands", sl.get("validation_commands")),
+                        )
+                        if not _is_non_empty_string(sl.get("objective")):
+                            details.errors.append(
+                                f"Milestone {i} slice {j} requires objective when ready_for_taskledger=true."
+                            )
+                        for field_name, value in required_lists:
+                            values = _string_list(
+                                value,
+                                field_name=f"milestones[{i}].slices[{j}].{field_name}",
+                                errors=details.errors,
+                            )
+                            if not values:
+                                details.errors.append(
+                                    f"Milestone {i} slice {j} requires non-empty {field_name} when ready_for_taskledger=true."
+                                )
+                    _ = BundleSliceModel(
+                        key=key if isinstance(key, str) else None,
+                        title=str(sl.get("title", "")),
+                        objective=str(sl.get("objective"))
+                        if sl.get("objective") is not None
+                        else None,
+                        target_files=_string_list(
+                            sl.get("target_files"),
+                            field_name=f"milestones[{i}].slices[{j}].target_files",
+                            errors=details.errors,
+                        ),
+                        implementation_steps=_string_list(
+                            sl.get("implementation_steps"),
+                            field_name=(
+                                f"milestones[{i}].slices[{j}].implementation_steps"
+                            ),
+                            errors=details.errors,
+                        ),
+                        acceptance_criteria=_string_list(
+                            sl.get("acceptance_criteria"),
+                            field_name=(
+                                f"milestones[{i}].slices[{j}].acceptance_criteria"
+                            ),
+                            errors=details.errors,
+                        ),
+                        validation_commands=_string_list(
+                            sl.get("validation_commands"),
+                            field_name=(
+                                f"milestones[{i}].slices[{j}].validation_commands"
+                            ),
+                            errors=details.errors,
+                        ),
+                        ready_for_taskledger=sl.get("ready_for_taskledger") is True,
+                    )
+                _ = BundleMilestoneModel(
+                    title=str(ms.get("title", "")),
+                    slices=[],
+                )
 
     decisions = bundle.get("decisions")
     if decisions is not None:
         if not isinstance(decisions, list):
-            errors.append("'decisions' must be a list.")
+            details.errors.append("'decisions' must be a list.")
+        else:
+            for i, decision in enumerate(decisions):
+                if not isinstance(decision, dict):
+                    details.errors.append(f"Decision {i} must be an object.")
+                    continue
+                if not _is_non_empty_string(decision.get("title")):
+                    details.errors.append(f"Decision {i} missing title.")
+                status = str(decision.get("status", "open"))
+                if status not in ALLOWED_DECISION_STATUSES:
+                    details.errors.append(
+                        f"Decision {i} has invalid status {status!r}. "
+                        f"Allowed: {sorted(ALLOWED_DECISION_STATUSES)}."
+                    )
+                options = decision.get("options", [])
+                if options is None:
+                    options = []
+                if not isinstance(options, list):
+                    details.errors.append(f"Decision {i} options must be a list.")
+                    continue
+                accepted_options = 0
+                parsed_options: list[BundleOptionModel] = []
+                for j, option in enumerate(options):
+                    if not isinstance(option, dict):
+                        details.errors.append(f"Decision {i} option {j} must be an object.")
+                        continue
+                    option_title = option.get("title")
+                    option_status = str(option.get("status", "candidate"))
+                    if option_status not in ALLOWED_OPTION_STATUSES:
+                        details.errors.append(
+                            f"Decision {i} option {j} has invalid status {option_status!r}. "
+                            f"Allowed: {sorted(ALLOWED_OPTION_STATUSES)}."
+                        )
+                    if option_status in {"accepted", "rejected"} and not _is_non_empty_string(
+                        option_title
+                    ):
+                        details.errors.append(
+                            f"Decision {i} option {j} requires title for status {option_status!r}."
+                        )
+                    if option_status == "accepted":
+                        accepted_options += 1
+                    parsed_options.append(
+                        BundleOptionModel(
+                            title=str(option_title or ""),
+                            status=option_status,
+                        )
+                    )
+                if status == "accepted" and accepted_options != 1:
+                    details.errors.append(
+                        f"Decision {i} is accepted but has {accepted_options} accepted options; exactly one is required."
+                    )
+                _ = BundleDecisionModel(
+                    title=str(decision.get("title", "")),
+                    status=status,
+                    decision_type=str(decision.get("decision_type"))
+                    if decision.get("decision_type") is not None
+                    else None,
+                    rationale=str(decision.get("rationale"))
+                    if decision.get("rationale") is not None
+                    else None,
+                    options=parsed_options,
+                )
 
     risks = bundle.get("risks")
     if risks is not None:
         if not isinstance(risks, list):
-            errors.append("'risks' must be a list.")
+            details.errors.append("'risks' must be a list.")
+        else:
+            for i, risk in enumerate(risks):
+                if not isinstance(risk, dict):
+                    details.errors.append(f"Risk {i} must be an object.")
+                    continue
+                if not _is_non_empty_string(risk.get("title")):
+                    details.errors.append(f"Risk {i} missing title.")
+                impact = str(risk.get("impact", "medium"))
+                likelihood = str(risk.get("likelihood", "medium"))
+                if impact not in ALLOWED_RISK_LEVELS:
+                    details.errors.append(
+                        f"Risk {i} has invalid impact {impact!r}. "
+                        f"Allowed: {sorted(ALLOWED_RISK_LEVELS)}."
+                    )
+                if likelihood not in ALLOWED_RISK_LEVELS:
+                    details.errors.append(
+                        f"Risk {i} has invalid likelihood {likelihood!r}. "
+                        f"Allowed: {sorted(ALLOWED_RISK_LEVELS)}."
+                    )
+                if impact == "high" and not _is_non_empty_string(risk.get("mitigation")):
+                    details.errors.append(
+                        f"Risk {i} with high impact requires a mitigation."
+                    )
+                _ = BundleRiskModel(
+                    title=str(risk.get("title", "")),
+                    impact=impact,
+                    likelihood=likelihood,
+                    mitigation=str(risk.get("mitigation", "")),
+                )
 
-    return errors
+    return details
+
+
+def validate_bundle(
+    bundle: dict[str, Any],
+    *,
+    strict_unknown_fields: bool = False,
+) -> list[str]:
+    return validate_bundle_details(
+        bundle,
+        strict_unknown_fields=strict_unknown_fields,
+    ).errors
 
 
 def _find_existing_by_key(
@@ -149,12 +438,12 @@ class _ApplyCtx:
 
 
 def _validate_or_raise(bundle: dict[str, Any]) -> None:
-    errors = validate_bundle(bundle)
-    if errors:
+    details = validate_bundle_details(bundle)
+    if details.errors:
         raise PlanledgerError(
             "invalid_bundle",
             "Bundle validation failed.",
-            remediation=errors,
+            remediation=details.errors,
         )
 
 
@@ -192,7 +481,12 @@ def _resolve_initiative(
     goal_id: str | None,
 ) -> str | None:
     title = init_data.get("title", "")
-    existing = _find_existing_by_title(ctx.workspace, "initiative", title)
+    existing = _find_existing_by_title(
+        ctx.workspace,
+        "initiative",
+        title,
+        goal_id=goal_id,
+    )
     if existing and init_data.get("reuse") == "active-or-create":
         ctx.result.reused.append({"kind": "initiative", "id": existing})
         return existing
@@ -553,6 +847,9 @@ def apply_bundle(
             "reused": len(ctx.result.reused),
         },
         actor=actor,
+        source_run=ctx.run_id,
+        provenance=ctx.provenance,
+        correlation_id=ctx.run_id,
     )
     ctx.result.events.append(evt)
     return ctx.result
@@ -568,12 +865,14 @@ def _preview_bundle(
     """Compute what apply_bundle would create without writing anything."""
     result = BundleApplyResult()
 
+    goal_scope: str | None = None
     # Simulate goal
     goal_data = bundle.get("goal", {})
     if goal_data:
         title = goal_data.get("title", "")
         existing = _find_existing_by_title(workspace, "goal", title)
         if existing and goal_data.get("reuse") == "active-or-create":
+            goal_scope = existing
             result.reused.append(
                 {
                     "kind": "goal",
@@ -589,12 +888,18 @@ def _preview_bundle(
                     "title": title,
                 }
             )
+            goal_scope = _PREVIEW_NEW_GOAL_SCOPE
 
     # Simulate initiative
     init_data = bundle.get("initiative", {})
     if init_data:
         title = init_data.get("title", "")
-        existing = _find_existing_by_title(workspace, "initiative", title)
+        existing = _find_existing_by_title(
+            workspace,
+            "initiative",
+            title,
+            goal_id=goal_scope,
+        )
         if existing and init_data.get("reuse") == "active-or-create":
             result.reused.append(
                 {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -313,6 +314,53 @@ def allocate_id(workspace: Workspace, kind: str) -> str:
     return allocated
 
 
+def _safe_event_command(command: str, max_chars: int = 600) -> str:
+    safe = command.strip()
+    if not safe:
+        return safe
+    safe = re.sub(
+        r'(--description)(?:=|\s+)(\"[^\"]*\"|\'[^\']*\'|\S+)',
+        r"\1 <omitted>",
+        safe,
+    )
+    if len(safe) > max_chars:
+        return safe[:max_chars] + "... (truncated)"
+    return safe
+
+
+def _safe_external_command_metadata(
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if metadata is None:
+        return None
+    safe = dict(metadata)
+    command_value = safe.get("command")
+    if isinstance(command_value, str):
+        safe["command"] = _safe_event_command(command_value)
+    args = safe.get("args")
+    if isinstance(args, list):
+        sanitized: list[Any] = []
+        skip_next = False
+        for token in args:
+            if skip_next:
+                sanitized.append("<omitted>")
+                skip_next = False
+                continue
+            if not isinstance(token, str):
+                sanitized.append(token)
+                continue
+            if token == "--description":
+                sanitized.append(token)
+                skip_next = True
+                continue
+            if token.startswith("--description="):
+                sanitized.append("--description=<omitted>")
+                continue
+            sanitized.append(token)
+        safe["args"] = sanitized
+    return safe
+
+
 def append_event(
     workspace: Workspace,
     command: str,
@@ -325,13 +373,16 @@ def append_event(
     actor: str = "human",
     source_run: str | None = None,
     provenance: str | None = None,
+    correlation_id: str | None = None,
+    external_command: dict[str, Any] | None = None,
+    duration_ms: int | None = None,
 ) -> dict[str, Any]:
     event_id = allocate_id(workspace, "event")
     payload: dict[str, Any] = {
         "id": event_id,
         "timestamp": now_iso(),
         "actor": actor,
-        "command": command,
+        "command": _safe_event_command(command),
         "object_type": object_type,
         "object_id": object_id,
         "event_type": event_type,
@@ -346,6 +397,13 @@ def append_event(
         payload["source_run"] = source_run
     if provenance is not None:
         payload["provenance"] = provenance
+    if correlation_id is not None:
+        payload["correlation_id"] = correlation_id
+    safe_external = _safe_external_command_metadata(external_command)
+    if safe_external is not None:
+        payload["external_command"] = safe_external
+    if duration_ms is not None:
+        payload["duration_ms"] = duration_ms
     _dump_yaml(
         _record_path(workspace, "event", event_id, ext="yaml"),
         payload,

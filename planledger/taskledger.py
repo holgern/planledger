@@ -33,6 +33,23 @@ def taskledger_settings(workspace: Workspace) -> tuple[str, Path]:
     return command, workspace_root
 
 
+def _taskledger_config_path(workspace: Workspace, workspace_root: Path) -> Path:
+    integration = dict(
+        workspace.config.get("integrations", {}).get("taskledger", {})  # type: ignore[union-attr]
+    )
+    configured = integration.get("config_file")
+    if configured:
+        configured_path = Path(str(configured))
+        if not configured_path.is_absolute():
+            configured_path = (workspace_root / configured_path).resolve()
+        return configured_path
+    for name in (".taskledger.toml", "taskledger.toml"):
+        candidate = workspace_root / name
+        if candidate.exists():
+            return candidate
+    return workspace_root / "taskledger.toml"
+
+
 def run_taskledger_json(
     workspace: Workspace,
     args: list[str],
@@ -80,14 +97,7 @@ def _unwrap_result(payload: dict[str, Any]) -> dict[str, Any]:
 def detect(workspace: Workspace) -> dict[str, Any]:
     command, workspace_root = taskledger_settings(workspace)
     executable = shutil.which(command)
-    config_path = None
-    for name in (".taskledger.toml", "taskledger.toml"):
-        candidate = workspace_root / name
-        if candidate.exists():
-            config_path = candidate
-            break
-    if config_path is None:
-        config_path = workspace_root / "taskledger.toml"
+    config_path = _taskledger_config_path(workspace, workspace_root)
 
     detected = executable is not None and config_path.exists()
     ledger_ref = None
@@ -156,13 +166,14 @@ def _create_binding(
 ) -> Any:
     binding_id = allocate_id(workspace, "binding")
     integration_command, workspace_root = taskledger_settings(workspace)
+    config_path = _taskledger_config_path(workspace, workspace_root)
     binding_front = {
         "id": binding_id,
         "type": "binding",
         "provider": "taskledger",
         "planledger_ref": slice_record.record_id,
         "workspace_root": str(workspace_root),
-        "taskledger_config": str(workspace_root / "taskledger.toml"),
+        "taskledger_config": str(config_path),
         "ledger_ref": workspace.ledger_ref,
         "task_ref": task_ref,
         "task_slug": task_slug,
@@ -184,6 +195,13 @@ def _create_binding(
         object_id=slice_record.record_id,
         event_type="taskledger_binding_created",
         after={"binding": binding_id, "task_ref": task_ref},
+        provenance="taskledger",
+        correlation_id=binding_id,
+        external_command={
+            "command": integration_command,
+            "workspace_root": str(workspace_root),
+            "task_ref": task_ref,
+        },
     )
     return binding
 
@@ -647,8 +665,21 @@ def generate_plan_template(
         if risk.front_matter.get("initiative") == initiative_id
     ]
 
+    slice_title = str(slice_record.front_matter.get("title", "Untitled slice"))
+    objective = str(slice_record.front_matter.get("objective", "")).strip()
+    target_files = list(slice_record.front_matter.get("target_files") or [])
+    implementation_steps = list(
+        slice_record.front_matter.get("implementation_steps") or []
+    )
+    acceptance_criteria = list(
+        slice_record.front_matter.get("acceptance_criteria") or []
+    )
+    validation_commands = list(
+        slice_record.front_matter.get("validation_commands") or []
+    )
+
     lines = [
-        "# Taskledger plan generated from planledger",
+        f"# Taskledger plan for {slice_title}",
         "",
         "Source:",
         f"- initiative: {initiative_id}",
@@ -656,21 +687,54 @@ def generate_plan_template(
         f"- milestone: {milestone_id}",
         f"- slice: {slice_id}",
         "",
-        "Planning rationale:",
     ]
+
+    if objective:
+        lines.extend(
+            [
+                "## Objective",
+                "",
+                objective,
+                "",
+            ]
+        )
+
+    if target_files:
+        lines.extend(
+            [
+                "## Target files",
+                "",
+            ]
+        )
+        for file_path in target_files:
+            lines.append(f"- `{file_path}`")
+        lines.append("")
+
+    lines.extend(
+        [
+            "Planning rationale:",
+        ]
+    )
 
     if decisions:
         for decision in decisions:
             chosen = decision.front_matter.get("chosen_option")
-            lines.append(f"- Decision {decision.record_id} accepted option {chosen}.")
+            label = decision.front_matter.get("title", decision.record_id)
+            lines.append(
+                f"- Decision {decision.record_id} ({label}) accepted option {chosen}."
+            )
     else:
         lines.append("- No accepted decision recorded.")
 
     if risks:
-        main_risk = risks[0]
-        lines.append(f"- Main risk: {main_risk.front_matter.get('title')}")
+        for risk in risks:
+            lines.append(
+                "- Risk: "
+                f"{risk.front_matter.get('title', risk.record_id)} "
+                f"(impact: {risk.front_matter.get('impact', 'unknown')})"
+            )
     else:
-        lines.append("- Main risk: not recorded.")
+        lines.append("- No open risks recorded.")
 
     lines.extend(
         [
@@ -680,9 +744,9 @@ def generate_plan_template(
             "",
         ]
     )
-    for step in slice_record.front_matter.get("implementation_steps", []):
+    for step in implementation_steps:
         lines.append(f"- {step}")
-    if not slice_record.front_matter.get("implementation_steps"):
+    if not implementation_steps:
         lines.append("- Implement slice objective.")
 
     lines.extend(
@@ -692,9 +756,9 @@ def generate_plan_template(
             "",
         ]
     )
-    for criterion in slice_record.front_matter.get("acceptance_criteria", []):
+    for criterion in acceptance_criteria:
         lines.append(f"- {criterion}")
-    if not slice_record.front_matter.get("acceptance_criteria"):
+    if not acceptance_criteria:
         lines.append("- Slice meets objective.")
 
     lines.extend(
@@ -704,9 +768,9 @@ def generate_plan_template(
             "",
         ]
     )
-    for cmd in slice_record.front_matter.get("validation_commands", []):
+    for cmd in validation_commands:
         lines.append(f"- `{cmd}`")
-    if not slice_record.front_matter.get("validation_commands"):
+    if not validation_commands:
         lines.append("- Run tests.")
 
     lines.append("")

@@ -44,3 +44,14 @@ def test_detect_no_config(workspace) -> None:
     with patch("planledger.taskledger.shutil.which", return_value=None):
         result = detect(workspace)
     assert result["detected"] is False
+
+
+def test_detect_uses_config_file_override(workspace) -> None:
+    hidden = workspace.root / ".custom-taskledger.toml"
+    hidden.write_text("[project]\nname = 'custom'\n", encoding="utf-8")
+    workspace.config.setdefault("integrations", {}).setdefault("taskledger", {})[
+        "config_file"
+    ] = ".custom-taskledger.toml"
+    with patch("planledger.taskledger.shutil.which", return_value=None):
+        result = detect(workspace)
+    assert result["config_path"] == str(hidden.resolve())

@@ -44,3 +44,30 @@ def test_reapply_creates_new_run(workspace):
 
     runs = list_records(workspace, "run")
     assert len(runs) == 2
+
+
+def test_initiative_reuse_is_scoped_by_goal(workspace):
+    bundle_one = {
+        "schema": "planledger.plan_bundle.v1",
+        "request": {"title": "First"},
+        "goal": {"title": "Goal A", "reuse": "active-or-create"},
+        "initiative": {"title": "Shared Initiative", "reuse": "active-or-create"},
+        "plan": {"title": "Plan A", "objectives": ["O"]},
+        "milestones": [],
+    }
+    bundle_two = {
+        "schema": "planledger.plan_bundle.v1",
+        "request": {"title": "Second"},
+        "goal": {"title": "Goal B", "reuse": "active-or-create"},
+        "initiative": {"title": "Shared Initiative", "reuse": "active-or-create"},
+        "plan": {"title": "Plan B", "objectives": ["O"]},
+        "milestones": [],
+    }
+    apply_bundle(workspace, bundle_one)
+    apply_bundle(workspace, bundle_two)
+
+    goals = list_records(workspace, "goal")
+    assert len(goals) == 2
+
+    initiatives = list_records(workspace, "initiative")
+    assert len(initiatives) == 2

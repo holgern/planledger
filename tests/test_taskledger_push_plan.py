@@ -12,7 +12,7 @@ from planledger.storage import (
     list_records,
     set_active_initiative,
 )
-from planledger.taskledger import push_plan
+from planledger.taskledger import generate_plan_template, push_plan
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "harness_bundle_v1.json"
 
@@ -118,3 +118,18 @@ def test_push_plan_no_ready_slices(tmp_path: Path):
     result = push_plan(ws, plan_id, dry_run=True)
     assert len(result["created"]) == 0
     assert len(result["skipped"]) == 0
+
+
+def test_generate_plan_template_uses_slice_fields(workspace_with_bundle):
+    ws = workspace_with_bundle
+    output = ws.root / "task-plan.md"
+    result = generate_plan_template(ws, "slice-0001", output)
+    assert result["output"] == str(output)
+    text = output.read_text(encoding="utf-8")
+    assert "# Taskledger plan for Add context export command" in text
+    assert "## Objective" in text
+    assert "Provide stable JSON context for harnesses." in text
+    assert "## Target files" in text
+    assert "planledger/context.py" in text
+    assert "## Validation hints" in text
+    assert "python -m pytest tests/test_context_export.py -q" in text

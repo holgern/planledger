@@ -10,7 +10,11 @@ import typer
 
 from planledger import __version__
 from planledger.backfill import backfill_apply, backfill_review
-from planledger.bundle import apply_bundle, load_bundle, validate_bundle
+from planledger.bundle import (
+    apply_bundle,
+    load_bundle,
+    validate_bundle_details,
+)
 from planledger.context import export_context
 from planledger.errors import PlanledgerError
 from planledger.models import AppContext, Record
@@ -542,6 +546,11 @@ def context_export(
     max_events: int = typer.Option(
         0, "--max-events", help="Include last N events (0 = none)"
     ),
+    allow_external_next_action: bool = typer.Option(
+        False,
+        "--allow-external-next-action",
+        help="Allow context export to call external integrations for next action.",
+    ),
 ) -> None:
     def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
         workspace = _resolve_workspace(ctx)
@@ -551,7 +560,7 @@ def context_export(
             include_bodies=include_bodies,
             max_body_chars=max_body_chars,
             max_events=max_events,
-            allow_external=include_taskledger,
+            allow_external=allow_external_next_action,
         )
         active_init = result.get("active", {}).get("initiative")
         counts = result.get("counts", {})
@@ -1723,19 +1732,35 @@ def taskledger_plan_template(
 def bundle_validate(
     ctx: typer.Context,
     bundle_path: Path = typer.Option(..., "--file", help="Path to bundle JSON"),
+    strict_unknown_fields: bool = typer.Option(
+        False,
+        "--strict-unknown-fields",
+        help="Treat unknown top-level bundle fields as errors.",
+    ),
 ) -> None:
     def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
         workspace = _resolve_workspace(ctx)
         bundle = load_bundle(bundle_path)
-        errors = validate_bundle(bundle)
+        details = validate_bundle_details(
+            bundle,
+            strict_unknown_fields=strict_unknown_fields,
+        )
+        errors = details.errors
         ok = len(errors) == 0
         result = {
             "kind": "planledger_bundle_validate",
             "ok": ok,
             "errors": errors,
+            "warnings": details.warnings,
         }
         if ok:
-            message = "Bundle validation passed."
+            if details.warnings:
+                message = (
+                    "Bundle validation passed with warnings:\n- "
+                    + "\n- ".join(details.warnings)
+                )
+            else:
+                message = "Bundle validation passed."
         else:
             message = "Bundle validation failed:\n- " + "\n- ".join(errors)
         return result, message, []
@@ -1775,6 +1800,8 @@ def bundle_apply_cmd(
                 f"{len(apply_result.reused)} reused."
             )
         return result, message, apply_result.events
+
+    _run_command(ctx, "bundle.apply", execute)
 
 
 @adr_app.command("create")
