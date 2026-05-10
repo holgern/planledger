@@ -476,10 +476,18 @@ def push_plan(
                 }
             )
 
+    warnings: list[str] = []
+    if create_tasks and not created:
+        warnings.append("No taskledger tasks were created; no ready slices were found.")
+
     return {
         "kind": "planledger_taskledger_push_plan",
         "plan": plan_id,
         "dry_run": dry_run,
+        "ready_slice_count": len(plan_slices),
+        "requested_create_tasks": create_tasks,
+        "handoff_complete": (not dry_run) and create_tasks and bool(created) and not failed,
+        "warnings": warnings,
         "created": created,
         "skipped": skipped,
         "failed": failed,

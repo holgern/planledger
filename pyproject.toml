@@ -10,7 +10,7 @@ include = ["planledger*"]
 planledger = ["py.typed"]
 
 [tool.pytest.ini_options]
-addopts = "-p no:odoo --strict-markers"
+addopts = "--strict-markers"
 testpaths = ["tests"]
 python_files = "test_*.py"
 markers = [

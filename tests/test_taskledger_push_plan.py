@@ -32,6 +32,9 @@ def test_push_plan_dry_run(workspace_with_bundle):
 
     result = push_plan(ws, plan_id, dry_run=True)
     assert result["dry_run"] is True
+    assert result["ready_slice_count"] == 1
+    assert result["requested_create_tasks"] is False
+    assert result["handoff_complete"] is False
     assert len(result["created"]) == 1
     assert result["created"][0]["slice"] is not None
     assert "description_preview" in result["created"][0]
@@ -53,6 +56,8 @@ def test_push_plan_no_create_tasks_skips(workspace_with_bundle):
     plan_id = plans[0].record_id
 
     result = push_plan(ws, plan_id, create_tasks=False)
+    assert result["handoff_complete"] is False
+    assert result["requested_create_tasks"] is False
     assert len(result["skipped"]) == 1
     assert result["skipped"][0]["reason"] == "create_tasks_not_set"
 
@@ -115,9 +120,15 @@ def test_push_plan_no_ready_slices(tmp_path: Path):
         "# Plan\n\n## Context\n",
     )
 
-    result = push_plan(ws, plan_id, dry_run=True)
+    result = push_plan(ws, plan_id, create_tasks=True)
+    assert result["ready_slice_count"] == 0
+    assert result["requested_create_tasks"] is True
+    assert result["handoff_complete"] is False
     assert len(result["created"]) == 0
     assert len(result["skipped"]) == 0
+    assert result["warnings"] == [
+        "No taskledger tasks were created; no ready slices were found."
+    ]
 
 
 def test_generate_plan_template_uses_slice_fields(workspace_with_bundle):

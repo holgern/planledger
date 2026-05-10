@@ -19,28 +19,28 @@ planledger init --project-name "My Project"
 planledger goal create "Make release pipeline reliable"
 planledger initiative create "Stabilize CI flow" --goal goal-0001
 planledger initiative activate init-0001
-planledger context export --json
+planledger --json context export
 ```
 
 ## Harness workflow
 
 1. Export current machine context:
    ```bash
-   planledger context export --json --include-bodies --max-body-chars 4000
+   planledger --json context export --include-bodies --max-body-chars 4000
    ```
 2. Agent reads project context + source code.
 3. Agent emits `planledger.plan_bundle.v1` JSON.
 4. Validate:
    ```bash
-   planledger bundle validate --file bundle.json --json
+   planledger --json bundle validate --file bundle.json
    ```
 5. Dry-run:
    ```bash
-   planledger bundle apply --file bundle.json --dry-run --json
+   planledger --json bundle apply --file bundle.json --dry-run
    ```
 6. Apply:
    ```bash
-   planledger bundle apply --file bundle.json --json
+   planledger --json bundle apply --file bundle.json
    ```
 
 ## Skill installation
@@ -59,10 +59,10 @@ cp -R ./skills/planledger ~/.agents/skills/planledger
 ## Taskledger integration
 
 ```bash
-planledger taskledger detect --json
-planledger taskledger push-plan plan-0001 --create-tasks --json
-planledger taskledger pull --json
-planledger taskledger reconcile --json
+planledger --json taskledger detect
+planledger --json taskledger push-plan plan-0001 --create-tasks
+planledger --json taskledger pull
+planledger --json taskledger reconcile
 ```
 
 ## Backfill workflow
@@ -70,10 +70,9 @@ planledger taskledger reconcile --json
 Use backfill for existing projects:
 
 ```bash
-planledger backfill apply --file baseline.json \
-  --evidence README.md:Project\ purpose \
-  --json
-planledger backfill review --json
+planledger --json backfill apply --file baseline.json \
+  --evidence README.md:Project\ purpose
+planledger --json backfill review
 ```
 
 ## Data model overview

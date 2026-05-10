@@ -67,6 +67,8 @@ DEFAULT_NEXT_IDS: dict[str, int] = {
     "event": 1,
     "run": 1,
 }
+PLANLEDGER_CONFIG_FILENAMES: tuple[str, str] = (".planledger.toml", "planledger.toml")
+DEFAULT_PLANLEDGER_CONFIG_FILENAME = "planledger.toml"
 PLAN_TEMPLATE = """# Plan
 
 ## Context
@@ -429,12 +431,39 @@ def list_events(
     return events
 
 
+def find_config_path(root: Path) -> Path | None:
+    for filename in PLANLEDGER_CONFIG_FILENAMES:
+        candidate = root / filename
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def require_config_path(root: Path) -> Path:
+    config_path = find_config_path(root)
+    if config_path is None:
+        names = " or ".join(PLANLEDGER_CONFIG_FILENAMES)
+        raise PlanledgerError(
+            "not_initialized",
+            f"No {names} found under {root}.",
+            remediation=['Run: planledger init --project-name "Your Project"'],
+        )
+    return config_path
+
+
 def write_config(
     root: Path,
     project_name: str,
     project_uuid: str,
     planledger_dir: str = ".planledger",
+    config_filename: str = DEFAULT_PLANLEDGER_CONFIG_FILENAME,
 ) -> None:
+    if config_filename not in PLANLEDGER_CONFIG_FILENAMES:
+        raise PlanledgerError(
+            "invalid_config_filename",
+            f"Unsupported planledger config filename: {config_filename}",
+            remediation=[f"Use one of: {', '.join(PLANLEDGER_CONFIG_FILENAMES)}"],
+        )
     config_text = (
         "[project]\n"
         f'name = "{project_name}"\n'
@@ -447,16 +476,16 @@ def write_config(
         'workspace_root = "."\n'
         'command = "taskledger"\n'
     )
-    (root / "planledger.toml").write_text(config_text, encoding="utf-8")
+    (root / config_filename).write_text(config_text, encoding="utf-8")
 
 
 def initialize_project(
     root: Path,
     project_name: str,
     planledger_dir: str = ".planledger",
+    config_filename: str = DEFAULT_PLANLEDGER_CONFIG_FILENAME,
 ) -> Workspace:
-    config_path = root / "planledger.toml"
-    if config_path.exists():
+    if find_config_path(root) is not None:
         raise PlanledgerError(
             "already_initialized",
             f"planledger is already initialized at {root}.",
@@ -464,7 +493,13 @@ def initialize_project(
         )
 
     project_uuid = str(uuid4())
-    write_config(root, project_name, project_uuid, planledger_dir=planledger_dir)
+    write_config(
+        root,
+        project_name,
+        project_uuid,
+        planledger_dir=planledger_dir,
+        config_filename=config_filename,
+    )
 
     plan_dir = root / planledger_dir
     ledger_ref = "main"
@@ -488,7 +523,7 @@ def initialize_project(
 def discover_project_root(start: Path) -> Path | None:
     current = start.resolve()
     for candidate in [current, *current.parents]:
-        if (candidate / "planledger.toml").exists():
+        if find_config_path(candidate) is not None:
             return candidate
     return None
 
@@ -512,17 +547,12 @@ def workspace_root_from_context(context: AppContext, init_mode: bool = False) ->
 
 
 def _validate_workspace_files(root: Path) -> None:
-    if not (root / "planledger.toml").exists():
-        raise PlanledgerError(
-            "not_initialized",
-            f"No planledger.toml found under {root}.",
-            remediation=['Run: planledger init --project-name "Your Project"'],
-        )
+    require_config_path(root)
 
 
 def load_workspace_from_root(root: Path) -> Workspace:
     _validate_workspace_files(root)
-    config_path = root / "planledger.toml"
+    config_path = require_config_path(root)
     config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     storage_section = dict(config.get("storage", {}))
     planledger_dir_name = str(storage_section.get("planledger_dir", ".planledger"))
@@ -756,7 +786,7 @@ def reindex(workspace: Workspace) -> dict[str, Any]:
 def doctor(workspace: Workspace) -> dict[str, Any]:
     issues: list[str] = []
     if not workspace.config_path.exists():
-        issues.append("Missing planledger.toml")
+        issues.append(f"Missing {workspace.config_path.name}")
     if not workspace.storage_path.exists():
         issues.append("Missing .planledger/storage.yaml")
 

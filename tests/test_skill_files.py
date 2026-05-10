@@ -41,3 +41,24 @@ def test_no_skill_cli_command():
     skill_dir = REPO_ROOT / "planledger" / "skill"
     assert not skill_module.exists()
     assert not skill_dir.exists()
+
+
+def test_skill_requires_planledger_cli_use():
+    content = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text()
+    assert "MUST use the planledger CLI" in content
+    assert "Reading this skill is not sufficient" in content
+
+
+def test_skill_requires_dry_run_before_apply():
+    content = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text()
+    dry_run_pos = content.index("bundle apply --file bundle.json --dry-run")
+    apply_pos = content.index("bundle apply --file bundle.json", dry_run_pos + 1)
+    assert dry_run_pos < apply_pos
+
+
+def test_skill_uses_returned_plan_id_for_taskledger():
+    content = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text()
+    assert "result.plan_id" in content
+    assert "Never hardcode `plan-0001`" in content
+    assert "taskledger detect" in content
+    assert "push-plan <result.plan_id> --create-tasks" in content

@@ -192,12 +192,17 @@ def project_init(
     ctx: typer.Context,
     project_name: str = typer.Option("Planledger", "--project-name"),
     planledger_dir: str = typer.Option(".planledger", "--planledger-dir"),
+    hidden_config: bool = typer.Option(False, "--hidden-config"),
 ) -> None:
     def execute() -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
         app_ctx = _context(ctx)
         root = workspace_root_from_context(app_ctx, init_mode=True)
+        config_filename = ".planledger.toml" if hidden_config else "planledger.toml"
         workspace = initialize_project(
-            root, project_name, planledger_dir=planledger_dir
+            root,
+            project_name,
+            planledger_dir=planledger_dir,
+            config_filename=config_filename,
         )
         result = {
             "kind": "planledger_project_init",

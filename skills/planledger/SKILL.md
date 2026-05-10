@@ -14,16 +14,33 @@ metadata:
 
 Use planledger as a hidden durable planning control plane. The human does not need to read plan Markdown.
 
+## Mandatory execution contract
+
+When this skill is loaded for planning, architecture, cross-module changes, ADR work, migration work, or taskledger handoff, the agent MUST use the planledger CLI. Reading this skill is not sufficient.
+
+First action after loading this skill:
+
+1. Run `planledger --json status`.
+2. If the workspace is not initialized and the user asked for planning in the current project, run `planledger init --project-name "<project>"`, then run `planledger --json status` again.
+3. Run `planledger --json context export --include-bodies --max-body-chars 4000` before drafting a bundle.
+
+The agent MUST NOT skip planledger when the user explicitly asks to use planledger, asks for a planledger bundle, asks for taskledger handoff, or the request involves architecture, cross-module workflow, migrations, ADRs, backfill, or repair.
+
 ## Default workflow
 
-1. Run `planledger --json status` or `planledger --json context export`.
-2. Determine planning mode: skip, light, full, or repair.
-3. For light/full/repair, read relevant code and prior planledger state.
-4. Produce a `planledger.plan_bundle.v1` JSON bundle.
-5. Validate it with `planledger --json bundle validate --file bundle.json`.
-6. Apply it with `planledger --json bundle apply --file bundle.json`.
-7. Push executable slices with `planledger --json taskledger push-plan plan-0001 --create-tasks` when requested or when slices are ready.
-8. Stop and report only the concise result and next command.
+1. `planledger --json status`
+2. `planledger --json context export --include-bodies --max-body-chars 4000`
+3. Read relevant source and prior planledger state.
+4. Write a `planledger.plan_bundle.v1` JSON file.
+5. `planledger --json bundle validate --file bundle.json`
+6. `planledger --json bundle apply --file bundle.json --dry-run`
+7. `planledger --json bundle apply --file bundle.json`
+8. Read `result.plan_id` from the apply output. Never hardcode `plan-0001` unless it is actually the returned id.
+9. If executable slices are ready or the user requested taskledger implementation handoff:
+   - `planledger --json taskledger detect`
+   - `planledger --json taskledger push-plan <result.plan_id> --create-tasks`
+   - If the result has zero created tasks, report that handoff did not complete and why. Do not claim taskledger handoff succeeded.
+10. Final response must include the plan id, whether bundle validation passed, whether dry-run passed, whether apply passed, and whether taskledger tasks were created or skipped.
 
 ## Human interaction rules
 
@@ -67,15 +84,16 @@ Use `planledger --json context export` to get a snapshot of current planning sta
 
 ```bash
 planledger --json bundle validate --file bundle.json
-planledger --json bundle apply --file bundle.json
 planledger --json bundle apply --file bundle.json --dry-run
+planledger --json bundle apply --file bundle.json
 ```
 
 ## Taskledger handoff
 
 ```bash
-planledger --json taskledger push-plan plan-0001 --create-tasks
-planledger --json taskledger push-plan plan-0001 --dry-run
+planledger --json taskledger detect
+planledger --json taskledger push-plan <plan-id-from-apply-result> --create-tasks
+planledger --json taskledger push-plan <plan-id-from-apply-result> --dry-run
 ```
 
 ## ADR commands
@@ -92,3 +110,16 @@ planledger adr accept dec-0001 --option opt-0001 --rationale "..."
 planledger --json backfill apply --file baseline.json
 planledger --json backfill review
 ```
+
+## Final response evidence checklist
+
+Before answering the human, verify and report:
+
+- status/context export was run
+- bundle validate passed
+- bundle apply dry-run passed
+- bundle apply passed
+- returned plan id was captured
+- taskledger detect was run when handoff was requested
+- taskledger push-plan was run with `--create-tasks` when handoff was requested
+- taskledger push-plan created tasks, or the response explicitly says why none were created
