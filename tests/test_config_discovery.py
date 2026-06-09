@@ -13,7 +13,7 @@ def test_config_discovery_works_from_nested_directories(tmp_path: Path, invoke) 
 
     assert init.exit_code == 0, init.stdout
     assert status.exit_code == 0, status.stdout
-    assert "Initialized workspace" in status.stdout
+    assert "Planledger status" in status.stdout
 
 
 def test_hidden_config_is_discovered_from_nested_directories(

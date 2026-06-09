@@ -57,11 +57,11 @@ plan apply
 
 1. Run `planledger --json status`.
 2. If the workspace is not initialized, run `planledger init`.
-3. Run `planledger next-action [--json]` to get the recommended next step.
-4. Run `planledger --json plan list`.
-5. If the user named a plan id, inspect it with `planledger --json plan show PLAN_ID`.
-6. If the user did not name a plan id and requested new planning work, create a new independent plan.
-7. If revising an existing plan, inspect the rendered output and relevant components before changing content.
+3. Run `planledger next-action [--json]` to get the recommended next step for the active plan.
+4. Run `planledger --json plan list` when you need a workspace-wide plan overview.
+5. If the user named a plan id, inspect it with `planledger --json plan show --plan PLAN_ID`.
+6. If the user did not name a plan id and requested new planning work, create a new independent plan. The new plan becomes active.
+7. If revising an existing plan, inspect the active plan with `planledger plan show` or use `--plan PLAN_ID` for a specific plan.
 8. Use repository inspection before writing `context`.
 
 ## Planning protocol
@@ -85,8 +85,8 @@ plan apply
    - `rollback`
    - `notes`
 7. Build and validate:
-   - `planledger plan build PLAN_ID`
-   - `planledger plan validate PLAN_ID`
+   - `planledger plan build`
+   - `planledger plan validate`
 8. If validation fails, fix the named component and rerun build/validate.
 9. Set status to `done` only after guardrails pass and the human has approved, unless the user explicitly requested a finished handoff artifact now.
 
@@ -127,8 +127,8 @@ The `validation` component must list commands or manual checks that the implemen
 
 Before setting `done`:
 
-1. Run `planledger plan build PLAN_ID`.
-2. Run `planledger plan validate PLAN_ID`.
+1. Run `planledger plan build`.
+2. Run `planledger plan validate`.
 3. Confirm every required component is non-empty and specific.
 4. Confirm every todo has target files, acceptance criteria, and validation commands.
 5. Confirm the plan has no unresolved required questions (no `- [ ] REQUIRED:` in `open_questions`).
@@ -137,8 +137,8 @@ Before setting `done`:
 Then run:
 
 ```bash
-planledger plan status PLAN_ID done --reason "Ready for coding-agent handoff."
-planledger plan build PLAN_ID
+planledger plan status done --reason "Ready for coding-agent handoff."
+planledger plan build
 ```
 
 ## Revision protocol
@@ -154,10 +154,10 @@ When the user asks for a change:
 Example:
 
 ```bash
-planledger plan status plan-0001 rework --reason "Human requested a smaller migration step."
-planledger plan component set plan-0001 todo_items --file /tmp/todos.md --reason "Split migration from API changes."
-planledger plan build plan-0001
-planledger plan validate plan-0001
+planledger plan status rework --reason "Human requested a smaller migration step."
+planledger plan component set todo_items --file /tmp/todos.md --reason "Split migration from API changes."
+planledger plan build
+planledger plan validate
 ```
 
 ## Structured bundle protocol
@@ -171,15 +171,16 @@ Use bundles for batch creation/update only when they make the operation clearer 
 | Need                  | Command                                                |
 | --------------------- | ------------------------------------------------------ |
 | Workspace overview    | `planledger --json status`                             |
-| Health check          | `planledger --json doctor`                             |
+| Health check          | `planledger --json doctor` or `planledger status --check` |
 | Recommended next step | `planledger next-action [--json]`                      |
 | List plans            | `planledger --json plan list`                          |
-| Show plan metadata    | `planledger --json plan show PLAN_ID`                  |
-| Show rendered handoff | `planledger plan show PLAN_ID --rendered`              |
-| List components       | `planledger --json plan component list PLAN_ID`        |
-| Read component        | `planledger plan component show PLAN_ID COMPONENT`     |
-| Show versions         | `planledger --json plan versions PLAN_ID`              |
-| Compare versions      | `planledger plan diff PLAN_ID --from v0001 --to v0002` |
+| Show active plan      | `planledger --json plan show`                          |
+| Show specific plan    | `planledger --json plan show --plan PLAN_ID`           |
+| Show rendered handoff | `planledger plan show --rendered`                      |
+| List components       | `planledger --json plan component list`                |
+| Read component        | `planledger plan component show COMPONENT`             |
+| Show versions         | `planledger --json plan versions`                      |
+| Compare versions      | `planledger plan diff --from v0001 --to v0002`         |
 
 ## CLI failure protocol
 
@@ -211,20 +212,23 @@ Do not paste the entire plan unless the user asks; point to the rendered Markdow
 
 ```bash
 planledger --json status
+planledger status --check
 planledger init
 planledger --json plan list
 planledger plan create --title "Short title" --request-file /tmp/request.md
-planledger plan component set plan-0001 context --file /tmp/context.md
-planledger plan component set plan-0001 approach --file /tmp/approach.md
-planledger plan component set plan-0001 todo_items --file /tmp/todos.md
-planledger plan component set plan-0001 target_files --file /tmp/target_files.md
-planledger plan component set plan-0001 validation --file /tmp/validation.md
-planledger plan component set plan-0001 risks --file /tmp/risks.md
-planledger plan build plan-0001
-planledger plan validate plan-0001
-planledger plan status plan-0001 done --reason "Ready for handoff."
-planledger plan show plan-0001 --rendered
-planledger plan versions plan-0001
-planledger plan diff plan-0001 --from v0001 --to v0002
+planledger plan component set context --file /tmp/context.md
+planledger plan component set approach --file /tmp/approach.md
+planledger plan component set todo_items --file /tmp/todos.md
+planledger plan component set target_files --file /tmp/target_files.md
+planledger plan component set validation --file /tmp/validation.md
+planledger plan component set risks --file /tmp/risks.md
+planledger plan build
+planledger plan validate
+planledger plan status done --reason "Ready for handoff."
+planledger plan show --rendered
+planledger plan show --plan plan-0001
+planledger plan activate plan-0001
+planledger plan versions
+planledger plan diff --from v0001 --to v0002
 planledger plan apply --file plan.json --dry-run
 ```

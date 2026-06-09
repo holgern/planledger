@@ -90,7 +90,9 @@ def test_no_stale_references_in_product_files() -> None:
 
 
 def test_skill_has_taskledger_style_agent_protocol_without_taskledger_scope() -> None:
-    skill = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text(encoding="utf-8")
+    skill = (
+        REPO_ROOT / "skills" / "planledger" / "SKILL.md"
+    ).read_text(encoding="utf-8")
 
     required_sections = (
         "## When to use this skill",
@@ -138,7 +140,6 @@ def test_skill_has_taskledger_style_agent_protocol_without_taskledger_scope() ->
     assert len(never_do_section) > 1, "Missing Never do these things section"
     after_never_do = never_do_section[1]
     next_section_split = after_never_do.split("\n## ", 1)
-    never_do_body = next_section_split[0]
     rest_of_skill = never_do_section[0] + (
         next_section_split[1] if len(next_section_split) > 1 else ""
     )
@@ -148,16 +149,19 @@ def test_skill_has_taskledger_style_agent_protocol_without_taskledger_scope() ->
 
 
 def test_skill_has_read_command_table() -> None:
-    skill = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text(encoding="utf-8")
+    skill = (
+        REPO_ROOT / "skills" / "planledger" / "SKILL.md"
+    ).read_text(encoding="utf-8")
 
     assert "## Which read command to use" in skill
     assert "planledger --json status" in skill
     assert "planledger --json doctor" in skill
     assert "planledger --json plan list" in skill
-    assert "planledger --json plan show PLAN_ID" in skill
-    assert "planledger plan show PLAN_ID --rendered" in skill
-    assert "planledger --json plan component list PLAN_ID" in skill
-    assert "planledger plan component show PLAN_ID COMPONENT" in skill
-    assert "planledger --json plan versions PLAN_ID" in skill
-    assert "planledger plan diff PLAN_ID" in skill
+    assert "planledger --json plan show" in skill
+    assert "planledger --json plan show --plan PLAN_ID" in skill
+    assert "planledger plan show --rendered" in skill
+    assert "planledger --json plan component list" in skill
+    assert "planledger plan component show COMPONENT" in skill
+    assert "planledger --json plan versions" in skill
+    assert "planledger plan diff --from" in skill
     assert "planledger next-action" in skill

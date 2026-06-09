@@ -304,6 +304,46 @@ def allocate_plan_id(workspace: Workspace) -> str:
     save_storage_data(workspace, data)
     return plan_id
 
+def get_active_plan_id(workspace: Workspace) -> str | None:
+    data = storage_data(workspace)
+    return data.get("active_plan_id")
+
+
+def set_active_plan_id(workspace: Workspace, plan_id: str) -> None:
+    data = storage_data(workspace)
+    data["active_plan_id"] = plan_id
+    data["updated_at"] = now_iso()
+    save_storage_data(workspace, data)
+
+
+def activate_plan(workspace: Workspace, plan_id: str) -> Plan:
+    plan = load_plan(workspace, plan_id)
+    set_active_plan_id(workspace, plan_id)
+    return plan
+
+
+def resolve_plan_id(
+    workspace: Workspace,
+    explicit: str | None = None,
+    positional: str | None = None,
+) -> str:
+    """Resolve plan id from --plan, positional arg, or active plan."""
+    if explicit is not None:
+        return explicit
+    if positional is not None:
+        return positional
+    active = get_active_plan_id(workspace)
+    if active is not None:
+        return active
+    raise PlanledgerError(
+        "no_active_plan",
+        "No active plan and no plan selector provided.",
+        remediation=[
+            "Run: planledger plan create --title TITLE --request REQUEST",
+            "Or: planledger plan activate PLAN_ID",
+        ],
+    )
+
 
 def initialize_project(
     root: Path,
@@ -635,6 +675,7 @@ def create_plan(
     plan = Plan(plan_id=plan_id, path=target_dir, metadata=metadata, components=specs)
     _write_plan_metadata(plan)
     snapshot_version(plan)
+    set_active_plan_id(workspace, plan_id)
     return load_plan(workspace, plan_id)
 
 
@@ -1001,37 +1042,41 @@ def compute_next_action(
     if plan_id is not None:
         plan = load_plan(workspace, plan_id)
     else:
-        active = [p for p in plans if p.status != "cancelled"]
-        non_done = [p for p in active if p.status != "done"]
-        if len(active) == 1:
-            plan = active[0]
-        elif len(non_done) == 1:
-            plan = non_done[0]
-        elif len(non_done) > 1:
-            return {
-                "workspace_initialized": True,
-                "plan_id": None,
-                "status": None,
-                "next_item": "specify_plan",
-                "next_command": "planledger --json plan list",
-                "blockers": [
-                    "Multiple non-done plans exist; specify a plan id."
-                ],
-                "validation_errors": [],
-            }
+        active_plan_id = get_active_plan_id(workspace)
+        if active_plan_id is not None:
+            plan = load_plan(workspace, active_plan_id)
         else:
-            return {
-                "workspace_initialized": True,
-                "plan_id": None,
-                "status": None,
-                "next_item": "create_plan",
-                "next_command": (
-                    "planledger plan create --title \"TITLE\" "
-                    "--request-file /tmp/request.md"
-                ),
-                "blockers": [],
-                "validation_errors": [],
-            }
+            active = [p for p in plans if p.status != "cancelled"]
+            non_done = [p for p in active if p.status != "done"]
+            if len(active) == 1:
+                plan = active[0]
+            elif len(non_done) == 1:
+                plan = non_done[0]
+            elif len(non_done) > 1:
+                return {
+                    "workspace_initialized": True,
+                    "plan_id": None,
+                    "status": None,
+                    "next_item": "specify_plan",
+                    "next_command": "planledger --json plan list",
+                    "blockers": [
+                        "Multiple non-done plans exist; specify a plan id."
+                    ],
+                    "validation_errors": [],
+                }
+            else:
+                return {
+                    "workspace_initialized": True,
+                    "plan_id": None,
+                    "status": None,
+                    "next_item": "create_plan",
+                    "next_command": (
+                        "planledger plan create --title \"TITLE\" "
+                        "--request-file /tmp/request.md"
+                    ),
+                    "blockers": [],
+                    "validation_errors": [],
+                }
 
     contents = load_component_contents(plan)
     errors = validate_plan(plan, for_done=True)

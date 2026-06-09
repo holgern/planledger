@@ -32,26 +32,31 @@ The CLI is the only supported mutation path. The rendered Markdown artifact is t
 
 ```bash
 # Check workspace state
-planledger --json status
+planledger status
+planledger status --check
 
 # Initialize if needed
 planledger init
 
-# Create a new independent plan
+# Create a new independent plan. The new plan becomes active.
 planledger plan create --title "Add feature A" --request "Please review how we can add feature A."
 
-# Populate components (inspect repository files first)
-planledger plan component set plan-0001 context --file context.md
-planledger plan component set plan-0001 approach --file approach.md
-planledger plan component set plan-0001 todo_items --file todos.md
-planledger plan component set plan-0001 target_files --file target_files.md
-planledger plan component set plan-0001 validation --file validation.md
-planledger plan component set plan-0001 risks --file risks.md
+# Populate components on the active plan (inspect repository files first)
+planledger plan component set context --file context.md
+planledger plan component set approach --file approach.md
+planledger plan component set todo_items --file todos.md
+planledger plan component set target_files --file target_files.md
+planledger plan component set validation --file validation.md
+planledger plan component set risks --file risks.md
+
+# Override the active plan when needed
+planledger plan show --plan plan-0001
+planledger plan activate plan-0001
 
 # Build, validate, mark done
-planledger plan build plan-0001
-planledger plan validate plan-0001
-planledger plan status plan-0001 done --reason "Ready for coding agent handoff."
+planledger plan build
+planledger plan validate
+planledger plan status done --reason "Ready for coding agent handoff."
 ```
 
 New planning request equals new independent plan unless the user names an existing `plan-000X`.
@@ -178,23 +183,24 @@ Explain the design and why it is acceptable.
 
 ```text
 planledger init [--project-name NAME] [--planledger-dir .planledger] [--hidden-config]
-planledger status [--json]
+planledger status [--check] [--json]
 planledger doctor [--json]
 planledger next-action [PLAN_ID] [--json]
 
 planledger plan create --title TITLE [--request TEXT | --request-file PATH] [--status new|in_progress]
+planledger plan activate PLAN_ID
 planledger plan list [--status STATUS] [--json]
-planledger plan show PLAN_ID [--component KEY] [--rendered] [--json]
-planledger plan status PLAN_ID STATUS --reason TEXT
-planledger plan cancel PLAN_ID --reason TEXT
-planledger plan component list PLAN_ID [--json]
-planledger plan component show PLAN_ID COMPONENT
-planledger plan component set PLAN_ID COMPONENT (--text TEXT | --file PATH) [--reason TEXT]
-planledger plan component append PLAN_ID COMPONENT (--text TEXT | --file PATH) [--reason TEXT]
-planledger plan build PLAN_ID [--out PATH] [--print] [--include-empty] [--json]
-planledger plan validate PLAN_ID [--json]
-planledger plan versions PLAN_ID [--json]
-planledger plan diff PLAN_ID --from v0001 --to v0002
+planledger plan show [PLAN_ID] [--plan PLAN_ID] [--component KEY] [--rendered] [--json]
+planledger plan status [PLAN_ID] [--plan PLAN_ID] STATUS --reason TEXT
+planledger plan cancel [PLAN_ID] [--plan PLAN_ID] --reason TEXT
+planledger plan component list [PLAN_ID] [--plan PLAN_ID] [--json]
+planledger plan component show COMPONENT [--plan PLAN_ID]
+planledger plan component set COMPONENT [--plan PLAN_ID] (--text TEXT | --file PATH) [--reason TEXT]
+planledger plan component append COMPONENT [--plan PLAN_ID] (--text TEXT | --file PATH) [--reason TEXT]
+planledger plan build [PLAN_ID] [--plan PLAN_ID] [--out PATH] [--print] [--include-empty] [--json]
+planledger plan validate [PLAN_ID] [--plan PLAN_ID] [--json]
+planledger plan versions [PLAN_ID] [--plan PLAN_ID] [--json]
+planledger plan diff [PLAN_ID] [--plan PLAN_ID] --from v0001 --to v0002
 planledger plan apply --file plan.json [--dry-run]
 ```
 

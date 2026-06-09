@@ -20,7 +20,6 @@ def test_versions_lists_snapshot_directories(
         "plan",
         "component",
         "set",
-        "plan-0001",
         "summary",
         "--text",
         "Short summary.",
@@ -32,3 +31,16 @@ def test_versions_lists_snapshot_directories(
     assert versions.exit_code == 0, versions.stdout
     assert "v0001" in versions.stdout
     assert "v0002" in versions.stdout
+
+
+def test_versions_uses_active_plan(initialized_workspace: Path, invoke) -> None:
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "Active", "--request", "req",
+    )
+    result = invoke(
+        initialized_workspace,
+        "plan", "versions",
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "v0001" in result.stdout

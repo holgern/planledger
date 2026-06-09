@@ -105,7 +105,7 @@ def test_next_action_done_plan(initialized_workspace: Path, invoke) -> None:
     assert payload["result"]["plan_id"] == "plan-0001"
 
 
-def test_next_action_multiple_non_done_plans(
+def test_next_action_prefers_active_plan(
     initialized_workspace: Path, invoke
 ) -> None:
     for i in range(2):
@@ -125,8 +125,30 @@ def test_next_action_multiple_non_done_plans(
     result = invoke(initialized_workspace, "--json", "next-action")
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
-    assert payload["result"]["next_item"] == "specify_plan"
+    assert payload["result"]["plan_id"] == "plan-0002"
 
+
+def test_next_action_explicit_plan_overrides_active(
+    initialized_workspace: Path, invoke
+) -> None:
+    for i in range(2):
+        create = invoke(
+            initialized_workspace,
+            "plan",
+            "create",
+            "--title",
+            f"Plan {i}",
+            "--request",
+            f"Request {i}.",
+        )
+        assert create.exit_code == 0, create.stdout
+
+    import json
+
+    result = invoke(initialized_workspace, "--json", "next-action", "plan-0001")
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert payload["result"]["plan_id"] == "plan-0001"
 
 def test_next_action_is_read_only(initialized_workspace: Path, invoke) -> None:
     import json

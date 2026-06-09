@@ -22,7 +22,6 @@ def test_setting_component_increments_version_and_snapshots(
         "plan",
         "component",
         "set",
-        "plan-0001",
         "todo_items",
         "--text",
         "1. Split storage work.\n2. Update the CLI.",
@@ -58,7 +57,6 @@ def test_unknown_component_fails_and_cancelled_plan_blocks_edits(
         "plan",
         "component",
         "set",
-        "plan-0001",
         "unknown_component",
         "--text",
         "text",
@@ -76,7 +74,6 @@ def test_unknown_component_fails_and_cancelled_plan_blocks_edits(
         "plan",
         "component",
         "set",
-        "plan-0001",
         "summary",
         "--text",
         "Updated summary.",
@@ -87,3 +84,36 @@ def test_unknown_component_fails_and_cancelled_plan_blocks_edits(
     assert cancel.exit_code == 0, cancel.stdout
     assert blocked.exit_code != 0
     assert "cancelled" in blocked.stdout
+
+
+def test_component_set_uses_active_plan(
+    initialized_workspace: Path, invoke
+) -> None:
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "Active", "--request", "req",
+    )
+    result = invoke(
+        initialized_workspace,
+        "plan", "component", "set", "summary", "--text", "Test summary.",
+    )
+    assert result.exit_code == 0, result.stdout
+
+
+def test_component_set_plan_option_overrides_active(
+    initialized_workspace: Path, invoke
+) -> None:
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "First", "--request", "req1",
+    )
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "Second", "--request", "req2",
+    )
+    result = invoke(
+        initialized_workspace,
+        "plan", "component", "set", "summary",
+        "--plan", "plan-0001", "--text", "For first.",
+    )
+    assert result.exit_code == 0, result.stdout

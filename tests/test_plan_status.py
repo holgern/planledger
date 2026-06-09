@@ -30,7 +30,6 @@ def _fill_required_components(workspace: Path, invoke) -> None:
             "plan",
             "component",
             "set",
-            "plan-0001",
             key,
             "--text",
             value,
@@ -129,3 +128,87 @@ def test_done_requires_reason_and_non_empty_required_components(
     assert missing_reason.exit_code != 0
     assert missing_components.exit_code != 0
     assert "Required component" in missing_components.stdout
+
+
+def test_plan_activate_switches_active_plan(
+    initialized_workspace: Path, invoke
+) -> None:
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "First", "--request", "req1",
+    )
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "Second", "--request", "req2",
+    )
+    result = invoke(
+        initialized_workspace,
+        "plan", "activate", "plan-0001",
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "Activated plan-0001" in result.stdout
+
+
+def test_plan_show_uses_active_plan(initialized_workspace: Path, invoke) -> None:
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "Active", "--request", "req",
+    )
+    result = invoke(
+        initialized_workspace,
+        "plan", "show",
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "plan-0001" in result.stdout
+
+
+def test_plan_show_plan_option_overrides_active(
+    initialized_workspace: Path, invoke
+) -> None:
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "First", "--request", "req1",
+    )
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "Second", "--request", "req2",
+    )
+    result = invoke(
+        initialized_workspace,
+        "plan", "show", "--plan", "plan-0001",
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "First" in result.stdout
+
+
+def test_plan_show_positional_overrides_active(
+    initialized_workspace: Path, invoke
+) -> None:
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "First", "--request", "req1",
+    )
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "Second", "--request", "req2",
+    )
+    result = invoke(
+        initialized_workspace,
+        "plan", "show", "plan-0001",
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "First" in result.stdout
+
+
+def test_plan_no_active_plan_no_selector_fails(
+    initialized_workspace: Path, invoke
+) -> None:
+    result = invoke(
+        initialized_workspace,
+        "plan", "show",
+    )
+    assert result.exit_code != 0
+    assert (
+        "no active plan" in result.stdout.lower()
+        or "no_active_plan" in result.stdout
+    )

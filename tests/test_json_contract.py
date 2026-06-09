@@ -36,7 +36,6 @@ def test_json_error_envelope(initialized_workspace: Path, invoke_json) -> None:
         "plan",
         "component",
         "set",
-        "plan-0001",
         "unknown_component",
         "--text",
         "text",
@@ -47,3 +46,21 @@ def test_json_error_envelope(initialized_workspace: Path, invoke_json) -> None:
     assert payload["ok"] is False
     assert payload["command"] == "plan.component.set"
     assert set(payload["error"]) >= {"code", "message", "remediation"}
+
+
+def test_status_json_envelope(initialized_workspace: Path, invoke_json) -> None:
+    result, payload = invoke_json(initialized_workspace, "status")
+    assert result.exit_code == 0, result.stdout
+    assert payload["ok"] is True
+    assert payload["command"] == "status"
+    r = payload["result"]
+    assert r["initialized"] is True
+    assert "root" in r
+    assert "config_path" in r
+    assert "project_name" in r
+    assert "project_uuid" in r
+    assert "plan_count" in r
+    assert "status_counts" in r
+    assert "active_plan" in r
+    assert isinstance(r["health"], dict)
+    assert r["health"]["checked"] is False

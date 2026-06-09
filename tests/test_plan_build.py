@@ -63,3 +63,17 @@ def test_build_is_deterministic_and_standalone(
         ).read_text()
     )
     assert before_version == after_version
+
+
+def test_build_uses_active_plan(initialized_workspace: Path, invoke) -> None:
+    invoke(
+        initialized_workspace,
+        "plan", "create", "--title", "Active", "--request", "req",
+    )
+    _fill_required_components(initialized_workspace, invoke)
+    result = invoke(
+        initialized_workspace,
+        "plan", "build", "--print",
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "## Proposed approach" in result.stdout

@@ -16,13 +16,15 @@ from planledger.render import build_plan
 from planledger.storage import (
     DEFAULT_PLANLEDGER_DIR,
     PLANLEDGER_CONFIG_FILENAMES,
+    activate_plan,
     append_component,
-    compute_next_action,
     component_spec,
+    compute_next_action,
     create_plan,
     diff_versions,
     discover_workspace,
     doctor,
+    get_active_plan_id,
     initialize_project,
     latest_rendered_path,
     list_plans,
@@ -33,6 +35,7 @@ from planledger.storage import (
     plan_status_counts,
     plan_to_dict,
     read_input_text,
+    resolve_plan_id,
     set_component,
     set_plan_status,
     storage_data,
@@ -40,6 +43,9 @@ from planledger.storage import (
     version_label,
     workspace_root_from_context,
 )
+
+ACTIVE_PLAN_HELP = "Plan id (uses active plan if omitted)"
+PLAN_OVERRIDE_HELP = "Plan id (overrides positional)"
 
 app = typer.Typer(help="Structured versioned planning files")
 plan_app = typer.Typer(help="Plan commands")
@@ -204,36 +210,96 @@ def init(
 
 
 @app.command()
-def status(ctx: typer.Context) -> None:
+def status(
+    ctx: typer.Context,
+    check: bool = typer.Option(False, "--check", help="Run health checks"),
+) -> None:
     def run() -> tuple[dict[str, Any], str]:
         app_ctx = _context(ctx)
         workspace = discover_workspace(app_ctx)
         root = workspace_root_from_context(app_ctx)
         if workspace is None:
-            return (
-                {
-                    "initialized": False,
-                    "root": str(root),
-                },
-                "planledger is not initialized.",
-            )
+            result = {"initialized": False, "root": str(root)}
+            message = f"Planledger status\nWorkspace: {root}\nNot initialized."
+            return result, message
+
         data = storage_data(workspace)
+        project_name = data.get("project_name", "")
+        project_uuid = data.get("project_uuid", "")
+        config = workspace.config.get("project", {})
+        if not project_name:
+            project_name = config.get("name", workspace.root.name)
+
+        active_plan_id = get_active_plan_id(workspace)
+        active_plan_info: dict[str, Any] | None = None
+        if active_plan_id is not None:
+            try:
+                active_plan = load_plan(workspace, active_plan_id)
+                active_plan_info = {
+                    "plan_id": active_plan.plan_id,
+                    "title": active_plan.title,
+                    "status": active_plan.status,
+                }
+            except PlanledgerError:
+                active_plan_info = {
+                    "plan_id": active_plan_id,
+                    "title": "(missing)",
+                    "status": "unknown",
+                }
+
+        status_counts = plan_status_counts(workspace)
+        plan_count = len(list_plans(workspace))
+
+        health_result: dict[str, Any] = {"checked": False, "healthy": None}
+        if check:
+            health_result = {"checked": True, **doctor(workspace)}
+
         result = {
             "initialized": True,
             "root": str(workspace.root),
             "config_path": str(workspace.config_path),
+            "project_name": project_name,
+            "project_uuid": project_uuid,
             "planledger_dir": str(workspace.planledger_dir),
             "schema_version": data.get("schema_version"),
-            "plan_count": len(list_plans(workspace)),
-            "status_counts": plan_status_counts(workspace),
+            "plan_count": plan_count,
+            "status_counts": status_counts,
+            "active_plan": active_plan_info,
+            "health": health_result,
         }
-        message = (
-            f"Initialized workspace at {workspace.root} "
-            f"with {result['plan_count']} plan(s)."
-        )
-        return result, message
+
+        lines = ["Planledger status"]
+        lines.append(f"Workspace: {workspace.root}")
+        lines.append(f"Config: {workspace.config_path}")
+        if project_name and project_uuid:
+            lines.append(f"Project: {project_name} ({project_uuid})")
+        elif project_name:
+            lines.append(f"Project: {project_name}")
+
+        if isinstance(active_plan_info, dict):
+            lines.append(
+                f"Active plan: {active_plan_info['plan_id']} "
+                f"{active_plan_info['title']} ({active_plan_info['status']})"
+            )
+        else:
+            lines.append("Active plan: none")
+
+        count_parts = [f"plans={plan_count}"]
+        for key in sorted(status_counts):
+            count_parts.append(f"{key}={status_counts[key]}")
+        lines.append(f"Counts: {' '.join(count_parts)}")
+
+        if health_result.get("checked"):
+            health = "healthy" if health_result.get("healthy") else "issues found"
+            lines.append(f"Health: {health}")
+        else:
+            lines.append("Health: not checked (use --check)")
+        lines.append("Next: planledger next-action")
+
+        return result, "\n".join(lines)
 
     _run_command(ctx, "status", run)
+
 
 
 @app.command("doctor")
@@ -310,10 +376,25 @@ def plan_list(
     _run_command(ctx, "plan.list", run)
 
 
+@plan_app.command("activate")
+def plan_activate(
+    ctx: typer.Context,
+    plan_id: str = typer.Argument(..., help="Plan id to activate"),
+) -> None:
+    def run() -> tuple[dict[str, Any], str]:
+        workspace = _require_workspace(ctx)
+        plan = activate_plan(workspace, plan_id)
+        result = plan_to_dict(plan)
+        return result, f"Activated {plan_id} ({plan.title})."
+
+    _run_command(ctx, "plan.activate", run)
+
+
 @plan_app.command("show")
 def plan_show(
     ctx: typer.Context,
-    plan_id: str,
+    plan_id: str | None = typer.Argument(None, help=ACTIVE_PLAN_HELP),
+    plan: str | None = typer.Option(None, "--plan", help=PLAN_OVERRIDE_HELP),
     component: str | None = typer.Option(None, "--component", help="Component key"),
     rendered: bool = typer.Option(
         False,
@@ -323,25 +404,26 @@ def plan_show(
 ) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        plan = load_plan(workspace, plan_id)
+        resolved = resolve_plan_id(workspace, explicit=plan, positional=plan_id)
+        plan_obj = load_plan(workspace, resolved)
         if component and rendered:
             raise PlanledgerError(
                 "invalid_options",
                 "Use either --component or --rendered, not both.",
             )
-        result = plan_to_dict(plan)
+        result = plan_to_dict(plan_obj)
         if component is not None:
             component_spec(component)
-            content = load_component_content(plan, component)
+            content = load_component_content(plan_obj, component)
             result["component"] = component
             result["content"] = content
             return result, content
         if rendered:
-            latest = latest_rendered_path(plan)
+            latest = latest_rendered_path(plan_obj)
             if not latest.exists():
                 raise PlanledgerError(
                     "not_found",
-                    f"No rendered artifact exists for {plan_id}.",
+                    f"No rendered artifact exists for {resolved}.",
                 )
             rendered_markdown = latest.read_text(encoding="utf-8")
             result["markdown"] = rendered_markdown
@@ -354,13 +436,15 @@ def plan_show(
 @plan_app.command("status")
 def plan_status_command(
     ctx: typer.Context,
-    plan_id: str,
-    status: PlanStatus,
+    plan_id: str | None = typer.Argument(None, help=ACTIVE_PLAN_HELP),
+    plan_opt: str | None = typer.Option(None, "--plan", help=PLAN_OVERRIDE_HELP),
+    status: PlanStatus = typer.Argument(..., help="New status"),
     reason: str = typer.Option(..., "--reason", help="Reason for the status change"),
 ) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        updated = set_plan_status(workspace, plan_id, status, reason)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt, positional=plan_id)
+        updated = set_plan_status(workspace, resolved, status, reason)
         built = build_plan(workspace, updated.plan_id)
         return built, _summary_message(built, "Updated")
 
@@ -370,12 +454,14 @@ def plan_status_command(
 @plan_app.command("cancel")
 def plan_cancel(
     ctx: typer.Context,
-    plan_id: str,
+    plan_id: str | None = typer.Argument(None, help=ACTIVE_PLAN_HELP),
+    plan_opt: str | None = typer.Option(None, "--plan", help=PLAN_OVERRIDE_HELP),
     reason: str = typer.Option(..., "--reason", help="Cancellation reason"),
 ) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        updated = set_plan_status(workspace, plan_id, "cancelled", reason)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt, positional=plan_id)
+        updated = set_plan_status(workspace, resolved, "cancelled", reason)
         built = build_plan(workspace, updated.plan_id)
         return built, _summary_message(built, "Cancelled")
 
@@ -383,12 +469,17 @@ def plan_cancel(
 
 
 @component_app.command("list")
-def plan_component_list(ctx: typer.Context, plan_id: str) -> None:
+def plan_component_list(
+    ctx: typer.Context,
+    plan_id: str | None = typer.Argument(None, help=ACTIVE_PLAN_HELP),
+    plan_opt: str | None = typer.Option(None, "--plan", help=PLAN_OVERRIDE_HELP),
+) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        plan = load_plan(workspace, plan_id)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt, positional=plan_id)
+        plan_obj = load_plan(workspace, resolved)
         result = {
-            "plan_id": plan_id,
+            "plan_id": resolved,
             "components": [
                 {
                     "key": key,
@@ -398,7 +489,7 @@ def plan_component_list(ctx: typer.Context, plan_id: str) -> None:
                     "order": spec.order,
                 }
                 for key, spec in sorted(
-                    plan.components.items(),
+                    plan_obj.components.items(),
                     key=lambda item: (item[1].order, item[0]),
                 )
             ],
@@ -416,14 +507,19 @@ def plan_component_list(ctx: typer.Context, plan_id: str) -> None:
 
 
 @component_app.command("show")
-def plan_component_show(ctx: typer.Context, plan_id: str, component: str) -> None:
+def plan_component_show(
+    ctx: typer.Context,
+    component: str = typer.Argument(..., help="Component key"),
+    plan_opt: str | None = typer.Option(None, "--plan", help=ACTIVE_PLAN_HELP),
+) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        plan = load_plan(workspace, plan_id)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt)
+        plan_obj = load_plan(workspace, resolved)
         component_spec(component)
-        content = load_component_content(plan, component)
+        content = load_component_content(plan_obj, component)
         return {
-            "plan_id": plan_id,
+            "plan_id": resolved,
             "component": component,
             "content": content,
         }, content
@@ -434,8 +530,8 @@ def plan_component_show(ctx: typer.Context, plan_id: str, component: str) -> Non
 @component_app.command("set")
 def plan_component_set(
     ctx: typer.Context,
-    plan_id: str,
-    component: str,
+    component: str = typer.Argument(..., help="Component key"),
+    plan_opt: str | None = typer.Option(None, "--plan", help=ACTIVE_PLAN_HELP),
     text: str | None = typer.Option(None, "--text", help="Inline component content"),
     file: Path | None = typer.Option(
         None,
@@ -451,10 +547,11 @@ def plan_component_set(
 ) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt)
         content = read_input_text(text, file)
         updated = set_component(
             workspace,
-            plan_id,
+            resolved,
             component,
             content,
             reason,
@@ -469,8 +566,8 @@ def plan_component_set(
 @component_app.command("append")
 def plan_component_append(
     ctx: typer.Context,
-    plan_id: str,
-    component: str,
+    component: str = typer.Argument(..., help="Component key"),
+    plan_opt: str | None = typer.Option(None, "--plan", help=ACTIVE_PLAN_HELP),
     text: str | None = typer.Option(None, "--text", help="Inline component content"),
     file: Path | None = typer.Option(
         None,
@@ -486,10 +583,11 @@ def plan_component_append(
 ) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt)
         content = read_input_text(text, file)
         updated = append_component(
             workspace,
-            plan_id,
+            resolved,
             component,
             content,
             reason,
@@ -504,7 +602,8 @@ def plan_component_append(
 @plan_app.command("build")
 def plan_build(
     ctx: typer.Context,
-    plan_id: str,
+    plan_id: str | None = typer.Argument(None, help=ACTIVE_PLAN_HELP),
+    plan_opt: str | None = typer.Option(None, "--plan", help=PLAN_OVERRIDE_HELP),
     out: Path | None = typer.Option(None, "--out", help="Write build output to path"),
     print_output: bool = typer.Option(False, "--print", help="Print rendered Markdown"),
     include_empty: bool = typer.Option(
@@ -515,7 +614,8 @@ def plan_build(
 ) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        built = build_plan(workspace, plan_id, out=out, include_empty=include_empty)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt, positional=plan_id)
+        built = build_plan(workspace, resolved, out=out, include_empty=include_empty)
         message = (
             built["markdown"] if print_output else _summary_message(built, "Built")
         )
@@ -525,31 +625,41 @@ def plan_build(
 
 
 @plan_app.command("validate")
-def plan_validate(ctx: typer.Context, plan_id: str) -> None:
+def plan_validate(
+    ctx: typer.Context,
+    plan_id: str | None = typer.Argument(None, help=ACTIVE_PLAN_HELP),
+    plan_opt: str | None = typer.Option(None, "--plan", help=PLAN_OVERRIDE_HELP),
+) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        plan = load_plan(workspace, plan_id)
-        errors = validate_plan(plan, for_done=plan.status == "done")
+        resolved = resolve_plan_id(workspace, explicit=plan_opt, positional=plan_id)
+        plan_obj = load_plan(workspace, resolved)
+        errors = validate_plan(plan_obj, for_done=plan_obj.status == "done")
         result = {
-            "plan_id": plan_id,
+            "plan_id": resolved,
             "valid": not errors,
             "errors": errors,
         }
         if errors:
             return result, "\n".join(errors)
-        return result, f"{plan_id} is valid."
+        return result, f"{resolved} is valid."
 
     _run_command(ctx, "plan.validate", run)
 
 
 @plan_app.command("versions")
-def plan_versions(ctx: typer.Context, plan_id: str) -> None:
+def plan_versions(
+    ctx: typer.Context,
+    plan_id: str | None = typer.Argument(None, help=ACTIVE_PLAN_HELP),
+    plan_opt: str | None = typer.Option(None, "--plan", help=PLAN_OVERRIDE_HELP),
+) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        plan = load_plan(workspace, plan_id)
-        versions = list_versions(plan)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt, positional=plan_id)
+        plan_obj = load_plan(workspace, resolved)
+        versions = list_versions(plan_obj)
         return {
-            "plan_id": plan_id,
+            "plan_id": resolved,
             "versions": versions,
         }, "\n".join(versions) or "No versions."
 
@@ -559,15 +669,17 @@ def plan_versions(ctx: typer.Context, plan_id: str) -> None:
 @plan_app.command("diff")
 def plan_diff(
     ctx: typer.Context,
-    plan_id: str,
+    plan_id: str | None = typer.Argument(None, help=ACTIVE_PLAN_HELP),
+    plan_opt: str | None = typer.Option(None, "--plan", help=PLAN_OVERRIDE_HELP),
     from_version: str = typer.Option(..., "--from", help="From version label"),
     to_version: str = typer.Option(..., "--to", help="To version label"),
 ) -> None:
     def run() -> tuple[dict[str, Any], str]:
         workspace = _require_workspace(ctx)
-        diff = diff_versions(workspace, plan_id, from_version, to_version)
+        resolved = resolve_plan_id(workspace, explicit=plan_opt, positional=plan_id)
+        diff = diff_versions(workspace, resolved, from_version, to_version)
         return {
-            "plan_id": plan_id,
+            "plan_id": resolved,
             "from": from_version,
             "to": to_version,
             "diff": diff,
