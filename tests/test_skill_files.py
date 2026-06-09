@@ -87,3 +87,77 @@ def test_no_stale_references_in_product_files() -> None:
     # grep exits 1 when no matches found, which is what we want
     matches = result.stdout.strip()
     assert not matches, f"Stale references found:\n{matches}"
+
+
+def test_skill_has_taskledger_style_agent_protocol_without_taskledger_scope() -> None:
+    skill = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text(encoding="utf-8")
+
+    required_sections = (
+        "## When to use this skill",
+        "## Never do these things",
+        "## Core agent command path",
+        "## Fresh context entry protocol",
+        "## Planning protocol",
+        "## Question protocol",
+        "## Done-gate protocol",
+        "## CLI failure protocol",
+        "## Final response contract",
+    )
+    for section in required_sections:
+        assert section in skill, f"Missing section: {section}"
+
+    required_phrases = (
+        "planledger --json status",
+        "planledger init",
+        "create a new independent plan",
+        "do not invent",
+        "open_questions",
+        "planledger plan build",
+        "planledger plan validate",
+        "rendered Markdown",
+    )
+    for phrase in required_phrases:
+        assert phrase.lower() in skill.lower(), f"Missing phrase: {phrase}"
+
+    # Phrases that must not appear in the skill, even in the "Never do" section.
+    # Use phrases that imply active usage rather than prohibition.
+    forbidden_phrases = (
+        "taskledger ",
+        "lock show",
+        "branch-scoped ledger",
+        "plan accept",
+        "todo done",
+    )
+    skill_lower = skill.lower()
+    for phrase in forbidden_phrases:
+        assert phrase.lower() not in skill_lower, f"Forbidden phrase found: {phrase}"
+
+    # implementation run / implementation runs are allowed only in the
+    # "Never do these things" section where they are explicitly forbidden.
+    never_do_section = skill_lower.split("## never do these things", 1)
+    assert len(never_do_section) > 1, "Missing Never do these things section"
+    after_never_do = never_do_section[1]
+    next_section_split = after_never_do.split("\n## ", 1)
+    never_do_body = next_section_split[0]
+    rest_of_skill = never_do_section[0] + (
+        next_section_split[1] if len(next_section_split) > 1 else ""
+    )
+    assert "implementation run" not in rest_of_skill, (
+        "'implementation run' must only appear in the Never do section"
+    )
+
+
+def test_skill_has_read_command_table() -> None:
+    skill = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "## Which read command to use" in skill
+    assert "planledger --json status" in skill
+    assert "planledger --json doctor" in skill
+    assert "planledger --json plan list" in skill
+    assert "planledger --json plan show PLAN_ID" in skill
+    assert "planledger plan show PLAN_ID --rendered" in skill
+    assert "planledger --json plan component list PLAN_ID" in skill
+    assert "planledger plan component show PLAN_ID COMPONENT" in skill
+    assert "planledger --json plan versions PLAN_ID" in skill
+    assert "planledger plan diff PLAN_ID" in skill
+    assert "planledger next-action" in skill

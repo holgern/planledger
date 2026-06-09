@@ -17,6 +17,7 @@ from planledger.storage import (
     DEFAULT_PLANLEDGER_DIR,
     PLANLEDGER_CONFIG_FILENAMES,
     append_component,
+    compute_next_action,
     component_spec,
     create_plan,
     diff_versions,
@@ -592,3 +593,26 @@ def plan_apply(
         return result, _summary_message(plan, "Applied")
 
     _run_command(ctx, "plan.apply", run)
+@app.command("next-action")
+def next_action(
+    ctx: typer.Context,
+    plan_id: str | None = typer.Argument(None, help="Plan id"),
+) -> None:
+    def run() -> tuple[dict[str, Any], str]:
+        app_ctx = _context(ctx)
+        workspace = discover_workspace(app_ctx)
+        result = compute_next_action(workspace, plan_id)
+        lines = [f"next_item: {result['next_item']}"]
+        if result.get('plan_id'):
+            lines.append(f"plan_id: {result['plan_id']}")
+        if result.get('status'):
+            lines.append(f"status: {result['status']}")
+        if result.get('next_command'):
+            lines.append(f"next_command: {result['next_command']}")
+        for blocker in result.get('blockers', []):
+            lines.append(f"blocker: {blocker}")
+        for error in result.get('validation_errors', []):
+            lines.append(f"validation_error: {error}")
+        return result, "\n".join(lines)
+
+    _run_command(ctx, "next-action", run)

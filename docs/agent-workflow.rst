@@ -4,17 +4,21 @@ Agent workflow
 Planledger is designed for coding-agent use. The typical workflow follows this
 loop.
 
-Step 1: Initialize
-------------------
+Step 1: Check status and initialize
+--------------------------------------
 
 .. code-block:: bash
 
+   planledger --json status
    planledger init
 
 This creates ``.planledger/`` and ``planledger.toml`` at the project root.
 
 Step 2: Create a plan
 ----------------------
+
+For every new planning request, create a new independent plan unless the user
+names an existing ``plan-000X``:
 
 .. code-block:: bash
 
@@ -24,7 +28,7 @@ Step 2: Create a plan
 Step 3: Populate components
 ----------------------------
 
-Read the repository, collect evidence, and set each component:
+Inspect the repository, collect evidence, and set each component:
 
 .. code-block:: bash
 
@@ -40,8 +44,11 @@ Step 4: Build and validate
 
 .. code-block:: bash
 
-   planledger plan build plan-0001 --print
+   planledger plan build plan-0001
    planledger plan validate plan-0001
+
+Plan validation means the plan artifact is structurally ready for handoff.
+It does not mean implementation tests have passed.
 
 If validation fails, fix the reported issues and re-run.
 
@@ -52,6 +59,7 @@ Step 5: Mark done and hand off
 
    planledger plan status plan-0001 done --reason "Ready for implementation."
 
+The ``done`` status means the handoff artifact is structurally ready.
 The rendered Markdown artifact is the handoff deliverable.
 
 Structured bundle workflow

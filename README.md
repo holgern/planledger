@@ -28,19 +28,33 @@ pip install -e .
 
 ## Quick start for coding agents
 
+The CLI is the only supported mutation path. The rendered Markdown artifact is the deliverable.
+
 ```bash
+# Check workspace state
+planledger --json status
+
+# Initialize if needed
 planledger init
-planledger plan create --title "Add feature A" --request "Please review how we can add feature A. Ask me questions when something is not clear."
+
+# Create a new independent plan
+planledger plan create --title "Add feature A" --request "Please review how we can add feature A."
+
+# Populate components (inspect repository files first)
 planledger plan component set plan-0001 context --file context.md
 planledger plan component set plan-0001 approach --file approach.md
 planledger plan component set plan-0001 todo_items --file todos.md
 planledger plan component set plan-0001 target_files --file target_files.md
 planledger plan component set plan-0001 validation --file validation.md
 planledger plan component set plan-0001 risks --file risks.md
-planledger plan build plan-0001 --print
+
+# Build, validate, mark done
+planledger plan build plan-0001
 planledger plan validate plan-0001
 planledger plan status plan-0001 done --reason "Ready for coding agent handoff."
 ```
+
+New planning request equals new independent plan unless the user names an existing `plan-000X`.
 
 ## Todo item template
 
@@ -65,7 +79,7 @@ Every todo item in the `todo_items` component should follow this structure:
 
 ## Handoff quality guardrails
 
-A plan cannot be marked `done` unless:
+`done` is a handoff-readiness state, not an implementation-completed state. A plan cannot be marked `done` unless:
 
 - `todo_items` contains at least one `### TODO-NNN` heading.
 - Every todo item has an **Acceptance criteria** section with at least one checkbox.
@@ -73,6 +87,9 @@ A plan cannot be marked `done` unless:
 - `target_files` contains at least one repo-relative file path or Markdown link.
 - `validation` contains at least one validation command.
 - No required component contains placeholder content (`TBD`, `TODO:`, `<fill>`, etc.).
+- `open_questions` contains no unresolved required questions (`- [ ] REQUIRED:`).
+
+Plan validation means the plan artifact is structurally ready for handoff. It does not mean implementation tests have passed.
 
 ## Plan components
 
@@ -163,6 +180,7 @@ Explain the design and why it is acceptable.
 planledger init [--project-name NAME] [--planledger-dir .planledger] [--hidden-config]
 planledger status [--json]
 planledger doctor [--json]
+planledger next-action [PLAN_ID] [--json]
 
 planledger plan create --title TITLE [--request TEXT | --request-file PATH] [--status new|in_progress]
 planledger plan list [--status STATUS] [--json]

@@ -158,6 +158,39 @@ def test_checkbox_only_todos_pass() -> None:
     assert any("Acceptance criteria" in e for e in errors)
 
 
+def test_done_rejects_unresolved_required_questions() -> None:
+    contents = _valid_contents()
+    contents["open_questions"] = (
+        "- [ ] REQUIRED: Which API version must remain supported?\n"
+        "- [ ] REQUIRED: Should migration be backward-compatible?"
+    )
+    errors = validate_handoff_contents(contents)
+    assert any("unresolved required questions" in e for e in errors)
+
+
+def test_done_accepts_resolved_required_questions() -> None:
+    contents = _valid_contents()
+    contents["open_questions"] = (
+        "- [x] REQUIRED: Which API version must remain supported? Answer: Python 3.10+."
+    )
+    errors = validate_handoff_contents(contents)
+    assert not any("unresolved required questions" in e for e in errors)
+
+
+def test_done_accepts_empty_open_questions() -> None:
+    contents = _valid_contents()
+    contents["open_questions"] = ""
+    errors = validate_handoff_contents(contents)
+    assert not any("open_questions" in e for e in errors)
+
+
+def test_done_accepts_non_required_open_questions() -> None:
+    contents = _valid_contents()
+    contents["open_questions"] = "- [ ] Should we use asyncio?"
+    errors = validate_handoff_contents(contents)
+    assert not any("unresolved required questions" in e for e in errors)
+
+
 def test_done_rejects_missing_todo_items_cli(
     initialized_workspace: Path, invoke
 ) -> None:

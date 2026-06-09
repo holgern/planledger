@@ -14,6 +14,7 @@ A plan moves through these statuses:
 
 ``done``
    All guardrails pass. The rendered Markdown artifact is ready for handoff.
+   ``done`` is a handoff-readiness state, not an implementation-completed state.
 
 ``cancelled``
    Abandoned. The plan is kept but excluded from active queries.
@@ -52,3 +53,7 @@ A plan cannot be marked ``done`` unless all of the following pass:
 - ``target_files`` contains at least one repo-relative file path or Markdown link.
 - ``validation`` contains at least one validation command.
 - No required component contains placeholder content (``TBD``, ``TODO:``, ``<fill>``, etc.).
+- ``open_questions`` contains no unresolved required questions (no ``- [ ] REQUIRED:``).
+
+Plan validation means the plan artifact is structurally ready for handoff.
+It does not mean implementation tests have passed.

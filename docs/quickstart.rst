@@ -1,15 +1,18 @@
 Quick start
 ===========
 
-The following sequence creates a plan, populates its components, builds the
-rendered Markdown, validates guardrails, and marks the plan done.
+The CLI is the only supported mutation path. The rendered Markdown artifact is the
+deliverable.
 
 .. code-block:: bash
+
+   # Check workspace state
+   planledger --json status
 
    # Initialize the project (run once)
    planledger init
 
-   # Create a new plan
+   # Create a new independent plan
    planledger plan create --title "Add feature A" \
        --request "Please review how we can add feature A."
 
@@ -21,10 +24,8 @@ rendered Markdown, validates guardrails, and marks the plan done.
    planledger plan component set plan-0001 validation --file validation.md
    planledger plan component set plan-0001 risks --file risks.md
 
-   # Build and print the rendered Markdown
-   planledger plan build plan-0001 --print
-
-   # Validate guardrails
+   # Build and validate
+   planledger plan build plan-0001
    planledger plan validate plan-0001
 
    # Mark the plan done
@@ -32,3 +33,7 @@ rendered Markdown, validates guardrails, and marks the plan done.
 
 After ``done``, the rendered Markdown artifact lives under
 ``.planledger/plans/plan-0001/rendered/``.
+
+New planning request equals new independent plan unless the user names an existing
+``plan-000X``. The ``done`` status means the handoff artifact is structurally ready,
+not that implementation has been completed.

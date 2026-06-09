@@ -978,3 +978,118 @@ def doctor(workspace: Workspace) -> dict[str, Any]:
             "storage_path": str(workspace.storage_path),
         },
     }
+def compute_next_action(
+    workspace: Workspace | None, plan_id: str | None = None
+) -> dict[str, Any]:
+    """Compute the recommended next action for an agent.
+
+    Read-only. Never creates or mutates a plan.
+    """
+    if workspace is None:
+        return {
+            "workspace_initialized": False,
+            "plan_id": None,
+            "status": None,
+            "next_item": "init",
+            "next_command": "planledger init",
+            "blockers": [],
+            "validation_errors": [],
+        }
+
+    plans = list_plans(workspace)
+
+    if plan_id is not None:
+        plan = load_plan(workspace, plan_id)
+    else:
+        active = [p for p in plans if p.status != "cancelled"]
+        non_done = [p for p in active if p.status != "done"]
+        if len(active) == 1:
+            plan = active[0]
+        elif len(non_done) == 1:
+            plan = non_done[0]
+        elif len(non_done) > 1:
+            return {
+                "workspace_initialized": True,
+                "plan_id": None,
+                "status": None,
+                "next_item": "specify_plan",
+                "next_command": "planledger --json plan list",
+                "blockers": [
+                    "Multiple non-done plans exist; specify a plan id."
+                ],
+                "validation_errors": [],
+            }
+        else:
+            return {
+                "workspace_initialized": True,
+                "plan_id": None,
+                "status": None,
+                "next_item": "create_plan",
+                "next_command": (
+                    "planledger plan create --title \"TITLE\" "
+                    "--request-file /tmp/request.md"
+                ),
+                "blockers": [],
+                "validation_errors": [],
+            }
+
+    contents = load_component_contents(plan)
+    errors = validate_plan(plan, for_done=True)
+
+    empty_required = [
+        key
+        for key in ordered_component_keys(plan.components)
+        if plan.components[key].required and not contents.get(key, "").strip()
+    ]
+
+    if empty_required:
+        first_empty = empty_required[0]
+        return {
+            "workspace_initialized": True,
+            "plan_id": plan.plan_id,
+            "status": plan.status,
+            "next_item": "fill_component",
+            "next_command": (
+                f"planledger plan component set {plan.plan_id} {first_empty} "
+                f"--file /tmp/{first_empty}.md"
+            ),
+            "blockers": [],
+            "validation_errors": errors,
+        }
+
+    if errors:
+        return {
+            "workspace_initialized": True,
+            "plan_id": plan.plan_id,
+            "status": plan.status,
+            "next_item": "fix_validation",
+            "next_command": f"planledger plan validate {plan.plan_id}",
+            "blockers": errors,
+            "validation_errors": errors,
+        }
+
+    if plan.status == "done":
+        rendered = latest_rendered_path(plan)
+        return {
+            "workspace_initialized": True,
+            "plan_id": plan.plan_id,
+            "status": plan.status,
+            "next_item": "handoff_ready",
+            "next_command": f"planledger plan show {plan.plan_id} --rendered",
+            "blockers": [],
+            "validation_errors": [],
+            "rendered_path": str(rendered),
+        }
+
+    return {
+        "workspace_initialized": True,
+        "plan_id": plan.plan_id,
+        "status": plan.status,
+        "next_item": "mark_done_after_human_approval",
+        "next_command": (
+            f"planledger plan status {plan.plan_id} done "
+            f"--reason \"Ready for handoff.\""
+        ),
+        "blockers": [],
+        "validation_errors": [],
+    }

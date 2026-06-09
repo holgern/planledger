@@ -15,6 +15,7 @@ COMMAND_RE = re.compile(
     r"(?m)(?:`(?:python|pytest|ruff|mypy|planledger)[^`]+`|"
     r"^\s*(?:python|pytest|ruff|mypy|planledger)\b)"
 )
+UNRESOLVED_REQUIRED_QUESTION_RE = re.compile(r"(?im)^[-*]\s+\[\s\]\s+REQUIRED:")
 
 
 def split_todo_blocks(text: str) -> list[str]:
@@ -91,6 +92,13 @@ def validate_handoff_contents(contents: dict[str, str]) -> list[str]:
     if not COMMAND_RE.search(contents.get("validation", "")):
         errors.append(
             "Component 'validation' must contain at least one validation command."
+        )
+
+    open_questions = contents.get("open_questions", "")
+    if UNRESOLVED_REQUIRED_QUESTION_RE.search(open_questions):
+        errors.append(
+            "Component 'open_questions' contains unresolved required questions; "
+            "answer them or keep the plan out of done."
         )
 
     return errors

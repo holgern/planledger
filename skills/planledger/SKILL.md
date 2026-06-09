@@ -1,6 +1,6 @@
 ---
 name: planledger
-description: Use planledger for independent structured plans and standalone Markdown handoff artifacts.
+description: Create independent structured implementation plans and standalone Markdown handoff artifacts
 license: Apache-2.0
 compatibility: opencode
 metadata:
@@ -8,41 +8,99 @@ metadata:
   workflow: planning
 ---
 
-## skill_version: planledger-skill-v3
+## skill_version: planledger-skill-v4
 
 # Planledger Skill
 
-Use planledger only for structured, versioned plans. The rendered Markdown artifact is the deliverable.
+Use Planledger only for structured, versioned planning. The rendered Markdown artifact is the deliverable.
 
-## Mandatory execution contract
+## When to use this skill
 
-When the user asks for planning work with planledger, the agent must use the planledger CLI.
+Use Planledger when the user asks for a durable implementation plan, a repository-informed planning review, a plan revision, or a standalone Markdown handoff for a coding agent.
 
-Recommended first steps:
+Do not use Planledger for implementation tracking, task management, release notes, branch workflow, locks, validation runs, or changelog generation.
+
+## Never do these things
+
+- Do not answer with a chat-only plan when the user asked to use Planledger.
+- Do not create goals, milestones, slices, external task records, implementation runs, validation runs, locks, or handoff records.
+- Do not create more than one plan for one user request unless the user explicitly asks.
+- Do not reuse an old plan for a new planning request unless the user names the existing `plan-000X`.
+- Do not edit `.planledger/` files directly. Use the Planledger CLI.
+- Do not fill the `context` component without inspecting repository files.
+- Do not invent answers to required user questions.
+- Do not set a plan to `done` while required questions are unresolved.
+- Do not set a plan to `done` until required components are complete, `plan build` succeeds, and `plan validate` passes.
+- Do not claim implementation tests passed unless you actually ran them.
+- Do not omit the plan id, version, status, rendered Markdown path, or validation result in the final response.
+
+## Core agent command path
+
+Use this path for normal planning work:
+
+```text
+status
+doctor
+next-action
+plan list | plan show
+plan create
+plan component list | plan component show
+plan component set | plan component append
+plan build
+plan validate
+plan status
+plan versions | plan diff
+plan apply
+```
+
+## Fresh context entry protocol
 
 1. Run `planledger --json status`.
 2. If the workspace is not initialized, run `planledger init`.
-3. Create a new independent plan unless the user names an existing `plan-000X`.
+3. Run `planledger next-action [--json]` to get the recommended next step.
+4. Run `planledger --json plan list`.
+5. If the user named a plan id, inspect it with `planledger --json plan show PLAN_ID`.
+6. If the user did not name a plan id and requested new planning work, create a new independent plan.
+7. If revising an existing plan, inspect the rendered output and relevant components before changing content.
+8. Use repository inspection before writing `context`.
 
-## Core rules
+## Planning protocol
 
-1. For every new planning request, create a new independent plan unless the user names an existing plan id.
-2. Inspect repository files before filling the `context` component.
-3. Ask clarifying questions in chat when needed, but store unresolved ones in the `open_questions` component.
-4. Do not create goals, milestones, slices, or external task records.
-5. Keep each plan component focused:
-   - `request` = original human request
-   - `summary` = executive verdict
-   - `context` = repository facts and evidence
-   - `open_questions` = unresolved issues
-   - `assumptions` = assumed facts
-   - `approach` = recommended architecture or design
-   - `todo_items` = structured todo items with acceptance criteria
-   - `target_files` = files that will change
-   - `validation` = commands and checks
-   - `risks` = risks and mitigations
-   - `rollback` = repair strategy
-6. Every todo item in `todo_items` must use this template:
+1. Save the user request to a temporary file.
+2. Create the plan:
+   `planledger plan create --title "Short title" --request-file /tmp/request.md`
+3. Inspect repository files relevant to the request.
+4. Write component files outside `.planledger/`.
+5. Set required components:
+   - `summary`
+   - `context`
+   - `approach`
+   - `todo_items`
+   - `target_files`
+   - `validation`
+   - `risks`
+6. Set optional components when useful:
+   - `open_questions`
+   - `assumptions`
+   - `rollback`
+   - `notes`
+7. Build and validate:
+   - `planledger plan build PLAN_ID`
+   - `planledger plan validate PLAN_ID`
+8. If validation fails, fix the named component and rerun build/validate.
+9. Set status to `done` only after guardrails pass and the human has approved, unless the user explicitly requested a finished handoff artifact now.
+
+## Question protocol
+
+- If required decisions are missing, write them to `open_questions`, ask the user in chat, and stop.
+- Do not invent answers to required questions from inference.
+- When the user answers, update `open_questions`, `assumptions`, `approach`, and `todo_items` with a reason.
+- If proceeding under assumptions, state the assumptions explicitly in the `assumptions` component.
+- Mark resolved required questions with `- [x] REQUIRED:` syntax so the guardrail allows `done`.
+
+## Component contract
+
+Each todo item in `todo_items` must use this structure:
 
 ```md
 ### TODO-001: <action-oriented title>
@@ -61,24 +119,101 @@ Recommended first steps:
 - `python -m pytest path/to/test_file.py -q`
 ```
 
-7. Never set status to `done` until:
-   - required components are complete;
-   - `plan validate` passes;
-   - `plan build` succeeds;
-   - the human has approved or the request explicitly asks for a finished handoff.
-8. When the user asks for a change, update only the affected component, provide a reason, build the plan, and report the new version.
-9. The final answer to the user must include:
-   - plan id;
-   - version;
-   - status;
-   - rendered Markdown path;
-   - validation command result.
+The `target_files` component must list every expected edit target as a repo-relative path or Markdown link.
 
-## Common workflow
+The `validation` component must list commands or manual checks that the implementation agent should run. Do not imply those commands already passed unless they were executed.
+
+## Done-gate protocol
+
+Before setting `done`:
+
+1. Run `planledger plan build PLAN_ID`.
+2. Run `planledger plan validate PLAN_ID`.
+3. Confirm every required component is non-empty and specific.
+4. Confirm every todo has target files, acceptance criteria, and validation commands.
+5. Confirm the plan has no unresolved required questions (no `- [ ] REQUIRED:` in `open_questions`).
+6. Confirm the human approved the plan or explicitly requested a finished handoff.
+
+Then run:
 
 ```bash
+planledger plan status PLAN_ID done --reason "Ready for coding-agent handoff."
+planledger plan build PLAN_ID
+```
+
+## Revision protocol
+
+When the user asks for a change:
+
+1. Inspect the current plan and rendered output.
+2. Change only the affected component(s).
+3. Provide a specific `--reason`.
+4. Rebuild and validate.
+5. Report the new version and rendered path.
+
+Example:
+
+```bash
+planledger plan status plan-0001 rework --reason "Human requested a smaller migration step."
+planledger plan component set plan-0001 todo_items --file /tmp/todos.md --reason "Split migration from API changes."
+planledger plan build plan-0001
+planledger plan validate plan-0001
+```
+
+## Structured bundle protocol
+
+Use `planledger plan apply --file plan.json --dry-run` before applying a bundle.
+
+Use bundles for batch creation/update only when they make the operation clearer than individual component commands.
+
+## Which read command to use
+
+| Need                  | Command                                                |
+| --------------------- | ------------------------------------------------------ |
+| Workspace overview    | `planledger --json status`                             |
+| Health check          | `planledger --json doctor`                             |
+| Recommended next step | `planledger next-action [--json]`                      |
+| List plans            | `planledger --json plan list`                          |
+| Show plan metadata    | `planledger --json plan show PLAN_ID`                  |
+| Show rendered handoff | `planledger plan show PLAN_ID --rendered`              |
+| List components       | `planledger --json plan component list PLAN_ID`        |
+| Read component        | `planledger plan component show PLAN_ID COMPONENT`     |
+| Show versions         | `planledger --json plan versions PLAN_ID`              |
+| Compare versions      | `planledger plan diff PLAN_ID --from v0001 --to v0002` |
+
+## CLI failure protocol
+
+If a Planledger command raises a Python traceback:
+
+1. Stop issuing mutating Planledger commands.
+2. Run one read-only probe: `planledger --json status`.
+3. If the probe fails, report that Planledger CLI startup is broken and no reliable mutation was recorded.
+4. If the probe succeeds, inspect command help and retry the failed command once with explicit arguments.
+
+If `plan validate` fails, do not mark the plan done. Fix the reported components, rebuild, and rerun validation.
+
+## Final response contract
+
+After planning or revision, answer with:
+
+```text
+Plan: plan-000X
+Version: v000Y
+Status: done|in_progress|rework
+Rendered Markdown: PATH
+Validation: COMMAND exited STATUS
+Next: approval needed | ready for coding-agent handoff | answer open questions
+```
+
+Do not paste the entire plan unless the user asks; point to the rendered Markdown artifact.
+
+## Minimal command examples
+
+```bash
+planledger --json status
 planledger init
-planledger plan create --title "Add feature A" --request-file /tmp/request.md
+planledger --json plan list
+planledger plan create --title "Short title" --request-file /tmp/request.md
 planledger plan component set plan-0001 context --file /tmp/context.md
 planledger plan component set plan-0001 approach --file /tmp/approach.md
 planledger plan component set plan-0001 todo_items --file /tmp/todos.md
@@ -86,40 +221,10 @@ planledger plan component set plan-0001 target_files --file /tmp/target_files.md
 planledger plan component set plan-0001 validation --file /tmp/validation.md
 planledger plan component set plan-0001 risks --file /tmp/risks.md
 planledger plan build plan-0001
-```
-
-When revising a plan:
-
-```bash
-planledger plan status plan-0001 rework --reason "Human requested changes"
-planledger plan component set plan-0001 todo_items --file /tmp/reworked-todos.md --reason "Split migration from UI change"
-planledger plan build plan-0001
-```
-
-When the human signs off:
-
-```bash
 planledger plan validate plan-0001
-planledger plan status plan-0001 done --reason "Human accepted the plan"
-planledger plan build plan-0001
-```
-
-## Bundle workflow
-
-```bash
+planledger plan status plan-0001 done --reason "Ready for handoff."
+planledger plan show plan-0001 --rendered
+planledger plan versions plan-0001
+planledger plan diff plan-0001 --from v0001 --to v0002
 planledger plan apply --file plan.json --dry-run
-planledger plan apply --file plan.json
 ```
-
-## Handoff quality guardrails
-
-A plan cannot be marked `done` unless:
-
-- `todo_items` contains at least one `### TODO-NNN` heading.
-- Every todo item has an **Acceptance criteria** section with at least one checkbox.
-- Every todo item has a **Target files** section with at least one file reference.
-- `target_files` contains at least one repo-relative file path.
-- `validation` contains at least one command.
-- No required component contains placeholder content like `TBD`, `TODO:`, or `<fill>`.
-
-These are enforced by the CLI. The agent does not need to implement them, but must provide content that satisfies them.
