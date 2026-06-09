@@ -1,297 +1,65 @@
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
+import copy
+import hashlib
+import shutil
+import sys
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 from uuid import uuid4
 
 import yaml
 
 from planledger.errors import PlanledgerError
-from planledger.models import AppContext, Record, Workspace
+from planledger.models import AppContext, ComponentSpec, Plan, PlanStatus, Workspace
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # type: ignore[no-redef]
+else:  # pragma: no cover
+    import tomli as tomllib
 
 
-RECORD_DIRS: dict[str, str] = {
-    "goal": "goals",
-    "initiative": "initiatives",
-    "plan": "plans",
-    "milestone": "milestones",
-    "slice": "slices",
-    "decision": "decisions",
-    "option": "options",
-    "language_area": "language_areas",
-    "language_term": "language_terms",
-    "language_ambiguity": "language_ambiguities",
-    "assumption": "assumptions",
-    "risk": "risks",
-    "constraint": "constraints",
-    "question": "questions",
-    "challenge_session": "challenge_sessions",
-    "binding": "bindings",
-    "review": "reviews",
-    "event": "events",
-    "run": "runs",
-}
-ID_PREFIXES: dict[str, str] = {
-    "goal": "goal",
-    "initiative": "init",
-    "plan": "plan",
-    "milestone": "ms",
-    "slice": "slice",
-    "decision": "dec",
-    "option": "opt",
-    "language_area": "area",
-    "language_term": "term",
-    "language_ambiguity": "amb",
-    "assumption": "asm",
-    "risk": "risk",
-    "constraint": "con",
-    "question": "q",
-    "challenge_session": "challenge",
-    "binding": "bind",
-    "review": "review",
-    "event": "event",
-    "run": "run",
-}
-DEFAULT_NEXT_IDS: dict[str, int] = {
-    "goal": 1,
-    "initiative": 1,
-    "plan": 1,
-    "milestone": 1,
-    "slice": 1,
-    "decision": 1,
-    "option": 1,
-    "language_area": 1,
-    "language_term": 1,
-    "language_ambiguity": 1,
-    "assumption": 1,
-    "risk": 1,
-    "constraint": 1,
-    "question": 1,
-    "challenge_session": 1,
-    "binding": 1,
-    "review": 1,
-    "event": 1,
-    "run": 1,
-}
-PLANLEDGER_CONFIG_FILENAMES: tuple[str, str] = (".planledger.toml", "planledger.toml")
+PLANLEDGER_CONFIG_FILENAMES: tuple[str, str] = ("planledger.toml", ".planledger.toml")
 DEFAULT_PLANLEDGER_CONFIG_FILENAME = "planledger.toml"
-PLAN_TEMPLATE = """# Plan
-
-## Context
-
-## Objectives
-
-## Non-goals
-
-## Milestones
-
-## Slices
-
-## Decisions
-
-## Risks
-
-## Validation strategy
-
-## Rollback or repair strategy
-"""
-
-
-def _record_reference(record: Record) -> str:
-    title = str(record.front_matter.get("title") or "").strip()
-    if title:
-        return f"{record.record_id} — {title}"
-    return record.record_id
-
-
-def render_plan_template(
-    initiative: Record,
-    goal: Record | None,
-    version: int,
-) -> str:
-    initiative_title = str(initiative.front_matter.get("title") or initiative.record_id)
-    goal_reference = _record_reference(goal) if goal is not None else "not recorded"
-    initiative_reference = _record_reference(initiative)
-    return f"""# Plan: {initiative_title}
-
-## Context
-
-- Goal: {goal_reference}
-- Initiative: {initiative_reference}
-- Version: v{version}
-
-## Objectives
-
-- Define the milestones and slices needed to deliver this initiative.
-
-## Non-goals
-
-## Milestones
-
-## Slices
-
-## Decisions
-
-## Risks
-
-## Validation strategy
-
-## Rollback or repair strategy
-"""
-
-
-DECISION_TEMPLATE = """# Decision
-
-## Context
-
-## Chosen option
-
-## Rationale
-
-## Consequences
-
-## Follow-up
-"""
-
-OPTION_TEMPLATE = """# Option
-
-## Summary
-
-## Pros
-
-## Cons
-
-## Risks
-
-## Implementation notes
-"""
-RATIONALE_TEMPLATE = (
-    "# Rationale\n\n"
-    "<Summarize the non-obvious trade-off in one paragraph first.>\n\n"
-    "## Evidence\n"
+DEFAULT_PLANLEDGER_DIR = ".planledger"
+STORAGE_FILENAME = "storage.yaml"
+VALID_STATUSES: set[PlanStatus] = {
+    "new",
+    "in_progress",
+    "rework",
+    "cancelled",
+    "done",
+}
+VALID_TRANSITIONS: dict[PlanStatus, set[PlanStatus]] = {
+    "new": {"in_progress", "rework", "cancelled", "done"},
+    "in_progress": {"rework", "cancelled", "done"},
+    "rework": {"in_progress", "cancelled", "done"},
+    "done": {"rework"},
+    "cancelled": set(),
+}
+COMPONENT_DEFINITIONS: tuple[tuple[str, str, str, int, bool], ...] = (
+    ("request", "components/00-request.md", "Original request", 0, True),
+    ("summary", "components/10-summary.md", "Summary", 10, True),
+    ("context", "components/20-context.md", "Repository context", 20, True),
+    ("open_questions", "components/30-open-questions.md", "Open questions", 30, False),
+    ("assumptions", "components/40-assumptions.md", "Assumptions", 40, False),
+    ("approach", "components/50-approach.md", "Proposed approach", 50, True),
+    (
+        "implementation_steps",
+        "components/60-implementation-steps.md",
+        "Implementation steps",
+        60,
+        True,
+    ),
+    ("target_files", "components/70-target-files.md", "Target files", 70, False),
+    ("validation", "components/80-validation.md", "Validation", 80, True),
+    ("risks", "components/90-risks.md", "Risks", 90, False),
+    ("rollback", "components/95-rollback.md", "Rollback / repair", 95, False),
+    ("notes", "components/99-notes.md", "Notes", 99, False),
 )
-ADR_TEMPLATE = RATIONALE_TEMPLATE
-LANGUAGE_AREA_TEMPLATE = "# Language Area\n\n## Summary\n\n## Notes\n"
-LANGUAGE_TERM_TEMPLATE = "# Language Term\n\n## Example usage\n\n## Notes\n"
-LANGUAGE_AMBIGUITY_TEMPLATE = "# Language Ambiguity\n\n## Meanings\n\n## Resolution\n"
-CHALLENGE_SESSION_TEMPLATE = (
-    "# Challenge Session\n\n## Goal\n\n## Questions\n\n## Findings\n"
-)
-DEFAULT_LANGUAGE_AREA_TITLE = "Project"
-RATIONALE_DECISION_TYPES = {"rationale", "architecture"}
-INFERRED_PROVENANCE = {"inferred", "agent-generated"}
-
-
-@dataclass
-class LintResult:
-    issues: list[str]
-
-    @property
-    def ok(self) -> bool:
-        return not self.issues
-
-
-def _front_matter_dict(record_or_front: Record | dict[str, Any]) -> dict[str, Any]:
-    if isinstance(record_or_front, Record):
-        return record_or_front.front_matter
-    return record_or_front
-
-
-def decision_type(record_or_front: Record | dict[str, Any]) -> str:
-    front = _front_matter_dict(record_or_front)
-    value = front.get("decision_type")
-    if value is None:
-        return ""
-    return str(value).strip().lower()
-
-
-def is_rationale_decision(record_or_front: Record | dict[str, Any]) -> bool:
-    return decision_type(record_or_front) in RATIONALE_DECISION_TYPES
-
-
-def list_rationale_records(
-    workspace: Workspace,
-    *,
-    initiative: str | None = None,
-) -> list[Record]:
-    records = [
-        record
-        for record in list_records(workspace, "decision")
-        if is_rationale_decision(record)
-    ]
-    if initiative is not None:
-        records = [
-            record
-            for record in records
-            if str(record.front_matter.get("initiative") or "") == initiative
-        ]
-    return records
-
-
-def normalize_language_canonical(value: str) -> str:
-    return " ".join(value.strip().split()).casefold()
-
-
-def default_language_area(workspace: Workspace) -> Record | None:
-    areas = list_records(workspace, "language_area")
-    for area in areas:
-        if area.front_matter.get("is_default") is True:
-            return area
-    if len(areas) == 1:
-        return areas[0]
-    for area in areas:
-        title = str(area.front_matter.get("title") or "").strip()
-        if title == DEFAULT_LANGUAGE_AREA_TITLE:
-            return area
-    return None
-
-
-def ensure_default_language_area(workspace: Workspace) -> Record:
-    existing = default_language_area(workspace)
-    if existing is not None:
-        return existing
-    area_id = allocate_id(workspace, "language_area")
-    timestamp = now_iso()
-    front = {
-        "id": area_id,
-        "type": "language_area",
-        "title": DEFAULT_LANGUAGE_AREA_TITLE,
-        "status": "active",
-        "paths": [],
-        "summary": "Repository-wide project language.",
-        "parent_area": None,
-        "is_default": True,
-        "created_at": timestamp,
-        "updated_at": timestamp,
-        "provenance": "human",
-    }
-    return create_record(workspace, "language_area", front, LANGUAGE_AREA_TEMPLATE)
-
-
-def find_language_term(
-    workspace: Workspace,
-    *,
-    area: str,
-    canonical: str,
-) -> Record | None:
-    needle = normalize_language_canonical(canonical)
-    for record in list_records(workspace, "language_term"):
-        if str(record.front_matter.get("area") or "") != area:
-            continue
-        current = normalize_language_canonical(
-            str(record.front_matter.get("canonical") or "")
-        )
-        if current == needle:
-            return record
-    return None
 
 
 def now_iso() -> str:
@@ -303,119 +71,207 @@ def now_iso() -> str:
     )
 
 
-def _dump_yaml(path: Path, data: dict[str, Any]) -> None:
+def version_label(version: int) -> str:
+    return f"v{version:04d}"
+
+
+def default_component_specs() -> dict[str, ComponentSpec]:
+    return {
+        key: ComponentSpec(
+            key=key,
+            path=path,
+            title=title,
+            order=order,
+            required=required,
+        )
+        for key, path, title, order, required in COMPONENT_DEFINITIONS
+    }
+
+
+def ordered_component_keys(
+    components: dict[str, ComponentSpec] | None = None,
+) -> list[str]:
+    selected = components or default_component_specs()
+    return [
+        spec.key
+        for spec in sorted(selected.values(), key=lambda item: (item.order, item.key))
+    ]
+
+
+def component_spec(component: str) -> ComponentSpec:
+    specs = default_component_specs()
+    try:
+        return specs[component]
+    except KeyError as exc:
+        raise PlanledgerError(
+            "invalid_component",
+            f"Unknown component key {component!r}.",
+            remediation=[
+                "Use one of: " + ", ".join(ordered_component_keys(specs)),
+            ],
+        ) from exc
+
+
+def read_input_text(text: str | None, file_path: Path | None) -> str:
+    if text is None and file_path is None:
+        raise PlanledgerError(
+            "missing_input",
+            "Provide either --text or --file.",
+        )
+    if text is not None and file_path is not None:
+        raise PlanledgerError(
+            "invalid_options",
+            "Use exactly one of --text or --file.",
+        )
+    if file_path is not None:
+        try:
+            return file_path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise PlanledgerError(
+                "not_found",
+                f"Input file does not exist: {file_path}",
+            ) from exc
+    assert text is not None
+    return text
+
+
+def workspace_root_from_context(app_ctx: AppContext) -> Path:
+    candidate = app_ctx.root or app_ctx.cwd or Path.cwd()
+    return candidate.resolve()
+
+
+def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
-    path.write_text(text, encoding="utf-8")
+    with NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path.parent,
+        delete=False,
+    ) as handle:
+        handle.write(content)
+        temp_path = Path(handle.name)
+    temp_path.replace(path)
+
+
+def _write_yaml(path: Path, data: dict[str, Any]) -> None:
+    _atomic_write(path, yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise PlanledgerError(
+            "not_found",
+            f"Required file does not exist: {path}",
+        ) from exc
     if loaded is None:
         return {}
     if not isinstance(loaded, dict):
         raise PlanledgerError(
             "invalid_yaml",
-            f"Expected mapping in {path}.",
-            remediation=[f"Inspect and repair: {path}"],
+            f"Expected a mapping in {path}.",
         )
     return loaded
 
 
-def parse_front_matter(content: str) -> tuple[dict[str, Any], str]:
-    if not content.startswith("---\n"):
-        raise PlanledgerError(
-            "invalid_record",
-            "Front matter delimiter missing at document start.",
-        )
-    end = content.find("\n---\n", 4)
-    if end == -1:
-        raise PlanledgerError(
-            "invalid_record", "Closing front matter delimiter not found."
-        )
-    front_text = content[4:end]
-    body = content[end + 5 :]
-    front = yaml.safe_load(front_text) or {}
-    if not isinstance(front, dict):
-        raise PlanledgerError("invalid_record", "Front matter must be a mapping.")
-    return front, body
-
-
-def render_front_matter(front: dict[str, Any], body: str) -> str:
-    yaml_text = yaml.safe_dump(front, sort_keys=False, allow_unicode=True).rstrip("\n")
-    if body:
-        return f"---\n{yaml_text}\n---\n{body}"
-    return f"---\n{yaml_text}\n---\n"
-
-
-def write_markdown(path: Path, front: dict[str, Any], body: str) -> None:
-    for field_name in ("id", "type", "created_at", "updated_at"):
-        if field_name not in front:
-            raise PlanledgerError(
-                "invalid_record",
-                f"Missing required field '{field_name}' for {path.name}.",
-            )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_front_matter(front, body), encoding="utf-8")
-
-
-def read_markdown(path: Path, kind: str) -> Record:
-    if not path.exists():
+def _load_toml(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as handle:
+            loaded = tomllib.load(handle)
+    except FileNotFoundError as exc:
         raise PlanledgerError(
             "not_found",
-            f"No {kind} found for ref {path.stem}.",
-            remediation=[f"Run: planledger {kind} list"],
+            f"Config file does not exist: {path}",
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise PlanledgerError(
+            "invalid_config",
+            f"Expected a table mapping in {path}.",
         )
-    front, body = parse_front_matter(path.read_text(encoding="utf-8"))
-    record_id = str(front.get("id", path.stem))
-    return Record(
-        kind=kind, record_id=record_id, path=path, front_matter=front, body=body
+    return loaded
+
+
+def _find_config(start: Path) -> tuple[Path, Path] | None:
+    for candidate in (start, *start.parents):
+        for name in PLANLEDGER_CONFIG_FILENAMES:
+            config_path = candidate / name
+            if config_path.exists():
+                return candidate, config_path
+    return None
+
+
+def discover_workspace(app_ctx: AppContext) -> Workspace | None:
+    start = workspace_root_from_context(app_ctx)
+    found = _find_config(start)
+    if found is None:
+        return None
+    root, config_path = found
+    config = _load_toml(config_path)
+    storage_config = config.get("storage", {})
+    planledger_dir_name = DEFAULT_PLANLEDGER_DIR
+    if isinstance(storage_config, dict):
+        configured_dir = storage_config.get("planledger_dir")
+        if isinstance(configured_dir, str) and configured_dir.strip():
+            planledger_dir_name = configured_dir.strip()
+    planledger_dir = (root / planledger_dir_name).resolve()
+    return Workspace(
+        root=root,
+        config_path=config_path,
+        planledger_dir=planledger_dir,
+        storage_path=planledger_dir / STORAGE_FILENAME,
+        config=config,
     )
 
 
-def _record_path(
-    workspace: Workspace, kind: str, record_id: str, ext: str = "md"
-) -> Path:
-    dir_name = RECORD_DIRS[kind]
-    return workspace.ledger_dir / dir_name / f"{record_id}.{ext}"
+def load_workspace(app_ctx: AppContext) -> Workspace:
+    workspace = discover_workspace(app_ctx)
+    if workspace is None:
+        raise PlanledgerError(
+            "workspace_not_initialized",
+            "planledger is not initialized in this workspace.",
+            remediation=[
+                "Run: planledger init",
+            ],
+        )
+    return workspace
 
 
-def list_records(workspace: Workspace, kind: str) -> list[Record]:
-    target_dir = workspace.ledger_dir / RECORD_DIRS[kind]
-    if not target_dir.exists():
-        return []
-    records = [read_markdown(path, kind) for path in sorted(target_dir.glob("*.md"))]
-    return records
+def plans_dir(workspace: Workspace) -> Path:
+    return workspace.planledger_dir / "plans"
 
 
-def load_record(workspace: Workspace, kind: str, record_id: str) -> Record:
-    return read_markdown(_record_path(workspace, kind, record_id), kind)
+def plan_dir(workspace: Workspace, plan_id: str) -> Path:
+    return plans_dir(workspace) / plan_id
 
 
-def save_record(record: Record) -> None:
-    write_markdown(record.path, record.front_matter, record.body)
+def plan_metadata_path_from_dir(path: Path) -> Path:
+    return path / "plan.yaml"
 
 
-def update_record_timestamp(record: Record) -> None:
-    record.front_matter["updated_at"] = now_iso()
+def plan_metadata_path(workspace: Workspace, plan_id: str) -> Path:
+    return plan_metadata_path_from_dir(plan_dir(workspace, plan_id))
 
 
-def create_record(
-    workspace: Workspace,
-    kind: str,
-    front_matter: dict[str, Any],
-    body: str,
-) -> Record:
-    record_id = str(front_matter["id"])
-    path = _record_path(workspace, kind, record_id)
-    write_markdown(path, front_matter, body)
-    return Record(
-        kind=kind,
-        record_id=record_id,
-        path=path,
-        front_matter=front_matter,
-        body=body,
-    )
+def rendered_dir(plan: Plan) -> Path:
+    return plan.path / "rendered"
+
+
+def latest_rendered_path(plan: Plan) -> Path:
+    return rendered_dir(plan) / "latest.md"
+
+
+def versioned_rendered_path(plan: Plan, version: int | None = None) -> Path:
+    selected_version = version if version is not None else plan.version
+    return rendered_dir(plan) / f"{plan.plan_id}-{version_label(selected_version)}.md"
+
+
+def versions_dir(plan: Plan) -> Path:
+    return plan.path / "versions"
+
+
+def version_snapshot_dir(plan: Plan, version: int) -> Path:
+    return versions_dir(plan) / version_label(version)
 
 
 def storage_data(workspace: Workspace) -> dict[str, Any]:
@@ -423,583 +279,692 @@ def storage_data(workspace: Workspace) -> dict[str, Any]:
 
 
 def save_storage_data(workspace: Workspace, data: dict[str, Any]) -> None:
-    _dump_yaml(workspace.storage_path, data)
+    _write_yaml(workspace.storage_path, data)
 
 
-def allocate_id(workspace: Workspace, kind: str) -> str:
-    if kind not in ID_PREFIXES:
-        raise PlanledgerError("invalid_kind", f"Unknown ID kind: {kind}")
+def preview_plan_id(workspace: Workspace) -> str:
     data = storage_data(workspace)
-    next_ids = data.setdefault("next_ids", {})
-    value = int(next_ids.get(kind, 1))
-    prefix = ID_PREFIXES[kind]
-    allocated = f"{prefix}-{value:04d}"
-    next_ids[kind] = value + 1
+    next_plan_id = int(data.get("next_plan_id", 1))
+    return f"plan-{next_plan_id:04d}"
+
+
+def allocate_plan_id(workspace: Workspace) -> str:
+    data = storage_data(workspace)
+    next_plan_id = int(data.get("next_plan_id", 1))
+    plan_id = f"plan-{next_plan_id:04d}"
+    data["next_plan_id"] = next_plan_id + 1
+    data["updated_at"] = now_iso()
     save_storage_data(workspace, data)
-    return allocated
-
-
-def _safe_event_command(command: str, max_chars: int = 600) -> str:
-    safe = command.strip()
-    if not safe:
-        return safe
-    safe = re.sub(
-        r'(--description)(?:=|\s+)(\"[^\"]*\"|\'[^\']*\'|\S+)',
-        r"\1 <omitted>",
-        safe,
-    )
-    if len(safe) > max_chars:
-        return safe[:max_chars] + "... (truncated)"
-    return safe
-
-
-def _safe_external_command_metadata(
-    metadata: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    if metadata is None:
-        return None
-    safe = dict(metadata)
-    command_value = safe.get("command")
-    if isinstance(command_value, str):
-        safe["command"] = _safe_event_command(command_value)
-    args = safe.get("args")
-    if isinstance(args, list):
-        sanitized: list[Any] = []
-        skip_next = False
-        for token in args:
-            if skip_next:
-                sanitized.append("<omitted>")
-                skip_next = False
-                continue
-            if not isinstance(token, str):
-                sanitized.append(token)
-                continue
-            if token == "--description":
-                sanitized.append(token)
-                skip_next = True
-                continue
-            if token.startswith("--description="):
-                sanitized.append("--description=<omitted>")
-                continue
-            sanitized.append(token)
-        safe["args"] = sanitized
-    return safe
-
-
-def append_event(
-    workspace: Workspace,
-    command: str,
-    object_type: str,
-    object_id: str,
-    event_type: str,
-    before: dict[str, Any] | None = None,
-    after: dict[str, Any] | None = None,
-    details: dict[str, Any] | None = None,
-    actor: str = "human",
-    source_run: str | None = None,
-    provenance: str | None = None,
-    correlation_id: str | None = None,
-    external_command: dict[str, Any] | None = None,
-    duration_ms: int | None = None,
-) -> dict[str, Any]:
-    event_id = allocate_id(workspace, "event")
-    payload: dict[str, Any] = {
-        "id": event_id,
-        "timestamp": now_iso(),
-        "actor": actor,
-        "command": _safe_event_command(command),
-        "object_type": object_type,
-        "object_id": object_id,
-        "event_type": event_type,
-    }
-    if before is not None:
-        payload["before"] = before
-    if after is not None:
-        payload["after"] = after
-    if details is not None:
-        payload["details"] = details
-    if source_run is not None:
-        payload["source_run"] = source_run
-    if provenance is not None:
-        payload["provenance"] = provenance
-    if correlation_id is not None:
-        payload["correlation_id"] = correlation_id
-    safe_external = _safe_external_command_metadata(external_command)
-    if safe_external is not None:
-        payload["external_command"] = safe_external
-    if duration_ms is not None:
-        payload["duration_ms"] = duration_ms
-    _dump_yaml(
-        _record_path(workspace, "event", event_id, ext="yaml"),
-        payload,
-    )
-    return payload
-
-
-def list_events(
-    workspace: Workspace,
-    limit: int | None = None,
-) -> list[dict[str, Any]]:
-    events_dir = workspace.ledger_dir / "events"
-    if not events_dir.exists():
-        return []
-    events: list[dict[str, Any]] = []
-    paths = sorted(events_dir.glob("*.yaml"))
-    if limit is not None:
-        paths = paths[-limit:]
-    for path in paths:
-        data = _load_yaml(path)
-        data["_path"] = str(path)
-        events.append(data)
-    return events
-
-
-def find_config_path(root: Path) -> Path | None:
-    for filename in PLANLEDGER_CONFIG_FILENAMES:
-        candidate = root / filename
-        if candidate.exists():
-            return candidate
-    return None
-
-
-def require_config_path(root: Path) -> Path:
-    config_path = find_config_path(root)
-    if config_path is None:
-        names = " or ".join(PLANLEDGER_CONFIG_FILENAMES)
-        raise PlanledgerError(
-            "not_initialized",
-            f"No {names} found under {root}.",
-            remediation=['Run: planledger init --project-name "Your Project"'],
-        )
-    return config_path
-
-
-def write_config(
-    root: Path,
-    project_name: str,
-    project_uuid: str,
-    planledger_dir: str = ".planledger",
-    config_filename: str = DEFAULT_PLANLEDGER_CONFIG_FILENAME,
-) -> None:
-    if config_filename not in PLANLEDGER_CONFIG_FILENAMES:
-        raise PlanledgerError(
-            "invalid_config_filename",
-            f"Unsupported planledger config filename: {config_filename}",
-            remediation=[f"Use one of: {', '.join(PLANLEDGER_CONFIG_FILENAMES)}"],
-        )
-    config_text = (
-        "[project]\n"
-        f'name = "{project_name}"\n'
-        f'uuid = "{project_uuid}"\n\n'
-        "[storage]\n"
-        f'planledger_dir = "{planledger_dir}"\n'
-        'ledger_ref = "main"\n\n'
-        "[integrations.taskledger]\n"
-        "enabled = true\n"
-        'workspace_root = "."\n'
-        'command = "taskledger"\n'
-    )
-    (root / config_filename).write_text(config_text, encoding="utf-8")
+    return plan_id
 
 
 def initialize_project(
     root: Path,
     project_name: str,
-    planledger_dir: str = ".planledger",
+    planledger_dir: str = DEFAULT_PLANLEDGER_DIR,
     config_filename: str = DEFAULT_PLANLEDGER_CONFIG_FILENAME,
 ) -> Workspace:
-    if find_config_path(root) is not None:
+    resolved_root = root.resolve()
+    if config_filename not in PLANLEDGER_CONFIG_FILENAMES:
+        raise PlanledgerError(
+            "invalid_config",
+            f"Unsupported config filename {config_filename!r}.",
+        )
+    for filename in PLANLEDGER_CONFIG_FILENAMES:
+        if (resolved_root / filename).exists():
+            raise PlanledgerError(
+                "already_initialized",
+                f"Workspace already contains {filename}.",
+            )
+    planledger_path = resolved_root / planledger_dir
+    if planledger_path.exists():
         raise PlanledgerError(
             "already_initialized",
-            f"planledger is already initialized at {root}.",
-            remediation=["Run: planledger status"],
+            f"Workspace already contains {planledger_path}.",
         )
-
     project_uuid = str(uuid4())
-    write_config(
-        root,
-        project_name,
-        project_uuid,
-        planledger_dir=planledger_dir,
-        config_filename=config_filename,
-    )
-
-    plan_dir = root / planledger_dir
-    ledger_ref = "main"
-    ledger_dir = plan_dir / "ledgers" / ledger_ref
-
-    for directory in RECORD_DIRS.values():
-        (ledger_dir / directory).mkdir(parents=True, exist_ok=True)
-
-    storage = {
-        "schema_version": 1,
-        "project_uuid": project_uuid,
-        "current_ledger": ledger_ref,
-        "next_ids": dict(DEFAULT_NEXT_IDS),
+    timestamp = now_iso()
+    config: dict[str, Any] = {
+        "project": {
+            "name": project_name,
+            "uuid": project_uuid,
+        },
+        "storage": {
+            "planledger_dir": planledger_dir,
+        },
     }
-    _dump_yaml(plan_dir / "storage.yaml", storage)
-    _dump_yaml(ledger_dir / "indexes" / "active.yaml", {"active_initiative": None})
-
-    return load_workspace_from_root(root)
-
-
-def discover_project_root(start: Path) -> Path | None:
-    current = start.resolve()
-    for candidate in [current, *current.parents]:
-        if find_config_path(candidate) is not None:
-            return candidate
-    return None
-
-
-def workspace_root_from_context(context: AppContext, init_mode: bool = False) -> Path:
-    if context.root is not None:
-        return context.root.resolve()
-    if context.cwd is not None:
-        chosen = context.cwd.resolve()
-        if init_mode:
-            return chosen
-        found = discover_project_root(chosen)
-        if found is not None:
-            return found
-        return chosen
-    here = Path.cwd().resolve()
-    if init_mode:
-        return here
-    found = discover_project_root(here)
-    return found or here
-
-
-def _validate_workspace_files(root: Path) -> None:
-    require_config_path(root)
-
-
-def load_workspace_from_root(root: Path) -> Workspace:
-    _validate_workspace_files(root)
-    config_path = require_config_path(root)
-    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    storage_section = dict(config.get("storage", {}))
-    planledger_dir_name = str(storage_section.get("planledger_dir", ".planledger"))
-    planledger_dir = root / planledger_dir_name
-    ledger_ref = str(storage_section.get("ledger_ref", "main"))
-    storage_path = planledger_dir / "storage.yaml"
-    if not storage_path.exists():
-        raise PlanledgerError(
-            "missing_storage",
-            f"Missing storage metadata: {storage_path}",
-            remediation=["Run: planledger doctor"],
-        )
-    ledger_dir = planledger_dir / "ledgers" / ledger_ref
-    if not ledger_dir.exists():
-        raise PlanledgerError(
-            "missing_ledger",
-            f"Missing ledger directory: {ledger_dir}",
-            remediation=["Run: planledger doctor"],
-        )
+    storage: dict[str, Any] = {
+        "schema_version": 2,
+        "project_uuid": project_uuid,
+        "next_plan_id": 1,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    _write_yaml(planledger_path / STORAGE_FILENAME, storage)
+    (planledger_path / "plans").mkdir(parents=True, exist_ok=True)
+    _atomic_write(
+        resolved_root / config_filename,
+        _toml_dump(config),
+    )
     return Workspace(
-        root=root,
-        config_path=config_path,
-        planledger_dir=planledger_dir,
-        storage_path=storage_path,
-        ledger_ref=ledger_ref,
-        ledger_dir=ledger_dir,
+        root=resolved_root,
+        config_path=resolved_root / config_filename,
+        planledger_dir=planledger_path,
+        storage_path=planledger_path / STORAGE_FILENAME,
         config=config,
     )
 
 
-def load_workspace(context: AppContext, init_mode: bool = False) -> Workspace:
-    root = workspace_root_from_context(context, init_mode=init_mode)
-    if not init_mode:
-        root = discover_project_root(root) or root
-    return load_workspace_from_root(root)
+def _toml_dump(data: dict[str, Any]) -> str:
+    lines: list[str] = []
+    project = data.get("project", {})
+    if isinstance(project, dict):
+        lines.append("[project]")
+        for key in ("name", "uuid"):
+            value = project.get(key)
+            if isinstance(value, str):
+                lines.append(f'{key} = "{value}"')
+        lines.append("")
+    storage = data.get("storage", {})
+    if isinstance(storage, dict):
+        lines.append("[storage]")
+        planledger_dir = storage.get("planledger_dir")
+        if isinstance(planledger_dir, str):
+            lines.append(f'planledger_dir = "{planledger_dir}"')
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
-def active_index_path(workspace: Workspace) -> Path:
-    return workspace.ledger_dir / "indexes" / "active.yaml"
+def _hash_text(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def active_initiative(workspace: Workspace) -> str | None:
-    path = active_index_path(workspace)
-    if path.exists():
-        data = _load_yaml(path)
-        value = data.get("active_initiative")
-        if value:
-            return str(value)
-    for initiative in list_records(workspace, "initiative"):
-        if initiative.front_matter.get("active") is True:
-            return initiative.record_id
-    return None
+def _plan_from_metadata(plan_path: Path, metadata: dict[str, Any]) -> Plan:
+    raw_components = metadata.get("components")
+    if not isinstance(raw_components, dict):
+        raise PlanledgerError(
+            "invalid_plan",
+            f"Plan metadata at {plan_path} is missing a valid components mapping.",
+        )
+    components: dict[str, ComponentSpec] = {}
+    for key, raw_spec in raw_components.items():
+        if not isinstance(raw_spec, dict):
+            raise PlanledgerError(
+                "invalid_plan",
+                f"Component metadata for {key!r} must be a mapping.",
+            )
+        path = raw_spec.get("path")
+        title = raw_spec.get("title")
+        order = raw_spec.get("order")
+        required = raw_spec.get("required")
+        if not isinstance(path, str) or not isinstance(title, str):
+            raise PlanledgerError(
+                "invalid_plan",
+                f"Component {key!r} is missing path/title metadata.",
+            )
+        if not isinstance(order, int) or not isinstance(required, bool):
+            raise PlanledgerError(
+                "invalid_plan",
+                f"Component {key!r} has invalid order/required metadata.",
+            )
+        sha256 = raw_spec.get("sha256")
+        components[key] = ComponentSpec(
+            key=key,
+            path=path,
+            title=title,
+            order=order,
+            required=required,
+            sha256=str(sha256) if isinstance(sha256, str) else None,
+        )
+    plan_id = str(metadata.get("id") or plan_path.name)
+    return Plan(
+        plan_id=plan_id,
+        path=plan_path,
+        metadata=metadata,
+        components=components,
+    )
 
 
-def set_active_initiative(workspace: Workspace, initiative_id: str | None) -> None:
-    initiatives = list_records(workspace, "initiative")
-    found = initiative_id is None
-    for initiative in initiatives:
-        is_active = initiative_id is not None and initiative.record_id == initiative_id
-        if is_active:
-            found = True
-        if initiative.front_matter.get("active") != is_active:
-            initiative.front_matter["active"] = is_active
-            update_record_timestamp(initiative)
-            save_record(initiative)
-    if not found and initiative_id is not None:
+def _component_metadata(spec: ComponentSpec) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "path": spec.path,
+        "required": spec.required,
+        "order": spec.order,
+        "title": spec.title,
+    }
+    if spec.sha256 is not None:
+        data["sha256"] = spec.sha256
+    return data
+
+
+def _write_plan_metadata(plan: Plan) -> None:
+    plan.metadata["components"] = {
+        key: _component_metadata(spec)
+        for key, spec in sorted(
+            plan.components.items(),
+            key=lambda item: (item[1].order, item[0]),
+        )
+    }
+    _write_yaml(plan_metadata_path_from_dir(plan.path), plan.metadata)
+
+
+def load_plan(workspace: Workspace, plan_id: str) -> Plan:
+    target_dir = plan_dir(workspace, plan_id)
+    if not target_dir.exists():
         raise PlanledgerError(
             "not_found",
-            f"No initiative found for ref {initiative_id}.",
-            remediation=["Run: planledger initiative list"],
+            f"Plan {plan_id} does not exist.",
         )
-    _dump_yaml(active_index_path(workspace), {"active_initiative": initiative_id})
+    return _plan_from_metadata(
+        target_dir,
+        _load_yaml(plan_metadata_path(workspace, plan_id)),
+    )
 
 
-def latest_plan_for_initiative(
-    workspace: Workspace, initiative_id: str
-) -> Record | None:
-    plans = [
-        plan
-        for plan in list_records(workspace, "plan")
-        if plan.front_matter.get("initiative") == initiative_id
-    ]
-    if not plans:
-        return None
-    plans.sort(key=lambda p: int(p.front_matter.get("version", 0)), reverse=True)
-    return plans[0]
+def list_plans(workspace: Workspace, status: str | None = None) -> list[Plan]:
+    listed: list[Plan] = []
+    target_dir = plans_dir(workspace)
+    if not target_dir.exists():
+        return listed
+    for candidate in sorted(target_dir.iterdir()):
+        if not candidate.is_dir():
+            continue
+        metadata_path = plan_metadata_path_from_dir(candidate)
+        if not metadata_path.exists():
+            continue
+        plan = _plan_from_metadata(candidate, _load_yaml(metadata_path))
+        if status is None or plan.status == status:
+            listed.append(plan)
+    return listed
 
 
-def next_plan_version(workspace: Workspace, initiative_id: str) -> int:
-    latest = latest_plan_for_initiative(workspace, initiative_id)
-    if latest is None:
-        return 1
-    return int(latest.front_matter.get("version", 0)) + 1
-
-
-def slugify(text: str) -> str:
-    cleaned = "".join(char.lower() if char.isalnum() else "-" for char in text)
-    while "--" in cleaned:
-        cleaned = cleaned.replace("--", "-")
-    return cleaned.strip("-") or "task"
-
-
-def milestone_for_slice(workspace: Workspace, milestone_id: str) -> Record:
-    return load_record(workspace, "milestone", milestone_id)
-
-
-def plan_for_milestone(workspace: Workspace, milestone: Record) -> Record:
-    plan_id = str(milestone.front_matter.get("plan"))
-    return load_record(workspace, "plan", plan_id)
-
-
-def initiative_for_plan(workspace: Workspace, plan: Record) -> Record:
-    initiative_id = str(plan.front_matter.get("initiative"))
-    return load_record(workspace, "initiative", initiative_id)
-
-
-def parse_ref_numeric(record_id: str) -> int:
-    suffix = record_id.rsplit("-", 1)[-1]
+def load_component_content(plan: Plan, component: str) -> str:
+    spec = plan.components.get(component)
+    if spec is None:
+        component_spec(component)
+        raise AssertionError("unreachable")
+    path = plan.path / spec.path
     try:
-        return int(suffix)
-    except ValueError:
-        return 0
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise PlanledgerError(
+            "not_found",
+            f"Component file does not exist: {path}",
+        ) from exc
 
 
-def lint_plan(workspace: Workspace, plan: Record) -> LintResult:
-    body = plan.body
-    issues: list[str] = []
-    slices = [
-        item
-        for item in list_records(workspace, "slice")
-        if item.front_matter.get("plan") == plan.record_id
-    ]
-
-    if "## Context" not in body:
-        issues.append("Missing section: Context")
-    else:
-        context_start = body.index("## Context") + len("## Context")
-        next_heading = body.find("\n## ", context_start)
-        context_text = (
-            body[context_start:next_heading]
-            if next_heading != -1
-            else body[context_start:]
-        )
-        if "Goal:" not in context_text:
-            issues.append("Context section missing goal reference.")
-        if "Initiative:" not in context_text:
-            issues.append("Context section missing initiative reference.")
-    if "## Objectives" not in body:
-        issues.append("Missing section: Objectives")
-    else:
-        obj_start = body.index("## Objectives") + len("## Objectives")
-        obj_next = body.find("\n## ", obj_start)
-        objectives_text = (
-            body[obj_start:obj_next] if obj_next != -1 else body[obj_start:]
-        ).strip()
-        if not objectives_text:
-            issues.append("Objectives section is empty.")
-
-    milestones = [
-        item
-        for item in list_records(workspace, "milestone")
-        if item.front_matter.get("plan") == plan.record_id
-    ]
-    if not milestones:
-        issues.append("Plan has no milestones.")
-    else:
-        for ms in milestones:
-            ms_slices = [
-                s for s in slices if s.front_matter.get("milestone") == ms.record_id
-            ]
-            if not ms_slices:
-                issues.append(f"Milestone {ms.record_id} has no slices.")
-
-    if not slices:
-        issues.append("Plan has no slices.")
-
-    initiative_id = str(plan.front_matter.get("initiative"))
-    open_decisions = [
-        item
-        for item in list_records(workspace, "decision")
-        if item.front_matter.get("initiative") == initiative_id
-        and item.front_matter.get("status") == "open"
-    ]
-    if open_decisions:
-        issues.append("Initiative has open decisions.")
-
-    high_risks = [
-        risk
-        for risk in list_records(workspace, "risk")
-        if risk.front_matter.get("initiative") == initiative_id
-        and risk.front_matter.get("impact") == "high"
-        and risk.front_matter.get("status") == "open"
-        and not str(risk.front_matter.get("mitigation") or "").strip()
-    ]
-    if high_risks:
-        issues.append("Open high-impact risks require mitigation.")
-
-    return LintResult(issues=issues)
-
-
-def record_counts(workspace: Workspace) -> dict[str, int]:
+def load_component_contents(plan: Plan) -> dict[str, str]:
     return {
-        kind: len(list_records(workspace, kind))
-        for kind in (
-            "goal",
-            "initiative",
-            "plan",
-            "milestone",
-            "slice",
-            "decision",
-            "option",
-            "language_area",
-            "language_term",
-            "language_ambiguity",
-            "risk",
-            "challenge_session",
-            "binding",
-        )
+        key: load_component_content(plan, key)
+        for key in ordered_component_keys(plan.components)
     }
 
 
-def reindex(workspace: Workspace) -> dict[str, Any]:
-    active = active_initiative(workspace)
-    _dump_yaml(active_index_path(workspace), {"active_initiative": active})
-    counts = record_counts(workspace)
-    summary_path = workspace.ledger_dir / "indexes" / "summary.yaml"
-    _dump_yaml(summary_path, {"generated_at": now_iso(), "counts": counts})
-    return {
-        "active_initiative": active,
-        "counts": counts,
-        "summary_index": str(summary_path.relative_to(workspace.root)),
+def _validate_status(status: str) -> PlanStatus:
+    if status not in VALID_STATUSES:
+        raise PlanledgerError(
+            "invalid_status",
+            f"Invalid status {status!r}.",
+            remediation=[
+                "Use one of: " + ", ".join(sorted(VALID_STATUSES)),
+            ],
+        )
+    return status
+
+
+def _validate_transition(current: PlanStatus, next_status: PlanStatus) -> None:
+    if current == next_status:
+        return
+    if next_status not in VALID_TRANSITIONS[current]:
+        raise PlanledgerError(
+            "invalid_status_transition",
+            f"Cannot change plan status from {current!r} to {next_status!r}.",
+        )
+
+
+def _required_component_content_errors(
+    plan: Plan,
+    proposed_contents: dict[str, str],
+) -> list[str]:
+    errors: list[str] = []
+    for key in ordered_component_keys(plan.components):
+        spec = plan.components[key]
+        if spec.required and not proposed_contents.get(key, "").strip():
+            errors.append(f"Required component {key!r} must be non-empty.")
+    return errors
+
+
+def validate_plan(plan: Plan, *, for_done: bool = False) -> list[str]:
+    errors: list[str] = []
+    try:
+        _validate_status(plan.status)
+    except PlanledgerError as exc:
+        errors.append(exc.message)
+    contents = load_component_contents(plan)
+    default_specs = default_component_specs()
+    for key in default_specs:
+        if key not in plan.components:
+            errors.append(f"Missing component metadata for {key!r}.")
+    for key in plan.components:
+        if key not in default_specs:
+            errors.append(f"Unknown component metadata for {key!r}.")
+    if for_done:
+        errors.extend(_required_component_content_errors(plan, contents))
+    return errors
+
+
+def create_plan(
+    workspace: Workspace,
+    title: str,
+    request: str,
+    status: str = "new",
+    *,
+    components: dict[str, str] | None = None,
+) -> Plan:
+    if not title.strip():
+        raise PlanledgerError("invalid_title", "Plan title must not be empty.")
+    validated_status = _validate_status(status)
+    component_values = components or {}
+    for key in component_values:
+        component_spec(key)
+    plan_id = allocate_plan_id(workspace)
+    created_at = now_iso()
+    target_dir = plan_dir(workspace, plan_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    specs = default_component_specs()
+    contents = {key: "" for key in specs}
+    contents["request"] = request
+    contents.update(component_values)
+    if validated_status == "done":
+        provisional_plan = Plan(
+            plan_id=plan_id,
+            path=target_dir,
+            metadata={"status": validated_status},
+            components=copy.deepcopy(specs),
+        )
+        done_errors = _required_component_content_errors(provisional_plan, contents)
+        if done_errors:
+            raise PlanledgerError(
+                "invalid_plan",
+                "Cannot create a done plan with empty required components.",
+                remediation=done_errors,
+            )
+    for key in ordered_component_keys(specs):
+        spec = specs[key]
+        content = contents[key]
+        spec.sha256 = _hash_text(content)
+        _atomic_write(target_dir / spec.path, content)
+    metadata: dict[str, Any] = {
+        "schema_version": 2,
+        "id": plan_id,
+        "type": "plan",
+        "title": title,
+        "status": validated_status,
+        "version": 1,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "request": {
+            "source": "human",
+            "prompt_file": "components/00-request.md",
+        },
+        "components": {
+            key: _component_metadata(spec)
+            for key, spec in sorted(
+                specs.items(),
+                key=lambda item: (item[1].order, item[0]),
+            )
+        },
+        "history": [
+            {
+                "version": 1,
+                "status": validated_status,
+                "created_at": created_at,
+                "reason": "Initial plan",
+            }
+        ],
     }
+    plan = Plan(plan_id=plan_id, path=target_dir, metadata=metadata, components=specs)
+    _write_plan_metadata(plan)
+    snapshot_version(plan)
+    return load_plan(workspace, plan_id)
+
+
+def _append_text(current: str, addition: str) -> str:
+    if not current:
+        return addition
+    if not addition:
+        return current
+    separator = (
+        "" if current.endswith(("\n", "\r")) or addition.startswith("\n") else "\n"
+    )
+    return f"{current}{separator}{addition}"
+
+
+def _default_reason(
+    plan: Plan,
+    changed_keys: Iterable[str],
+    status: PlanStatus,
+    status_changed: bool,
+) -> str:
+    keys = list(changed_keys)
+    if status_changed and keys:
+        return "Updated plan status and components."
+    if status_changed:
+        return f"Changed status to {status}."
+    if len(keys) == 1:
+        return f"Updated {keys[0]} component."
+    return "Updated plan components."
+
+
+def apply_plan_mutations(
+    workspace: Workspace,
+    plan_id: str,
+    *,
+    component_updates: dict[str, str] | None = None,
+    append_components: set[str] | None = None,
+    status: str | None = None,
+    reason: str | None = None,
+    force: bool = False,
+) -> Plan:
+    plan = load_plan(workspace, plan_id)
+    updates = component_updates or {}
+    append_keys = append_components or set()
+    for key in updates:
+        component_spec(key)
+    if plan.status == "cancelled" and (updates or status is not None) and not force:
+        raise PlanledgerError(
+            "cancelled_plan",
+            f"Plan {plan.plan_id} is cancelled and cannot be edited.",
+            remediation=[
+                "Use --force only when you intentionally need "
+                "to override the terminal state.",
+            ],
+        )
+    current_contents = load_component_contents(plan)
+    next_contents = dict(current_contents)
+    changed_keys: list[str] = []
+    for key, value in updates.items():
+        new_content = (
+            _append_text(current_contents[key], value) if key in append_keys else value
+        )
+        if new_content != current_contents[key]:
+            next_contents[key] = new_content
+            changed_keys.append(key)
+    next_status = plan.status
+    status_changed = False
+    if status is not None:
+        validated_status = _validate_status(status)
+        _validate_transition(plan.status, validated_status)
+        if validated_status != plan.status:
+            next_status = validated_status
+            status_changed = True
+    if next_status == "done":
+        errors = _required_component_content_errors(plan, next_contents)
+        if errors:
+            raise PlanledgerError(
+                "invalid_plan",
+                "Cannot set plan status to done while required components are empty.",
+                remediation=errors,
+            )
+    if not changed_keys and not status_changed:
+        return plan
+    timestamp = now_iso()
+    for key in changed_keys:
+        spec = plan.components[key]
+        spec.sha256 = _hash_text(next_contents[key])
+        _atomic_write(plan.path / spec.path, next_contents[key])
+    plan.metadata["status"] = next_status
+    plan.metadata["version"] = plan.version + 1
+    plan.metadata["updated_at"] = timestamp
+    history = plan.metadata.setdefault("history", [])
+    if not isinstance(history, list):
+        raise PlanledgerError(
+            "invalid_plan",
+            f"Plan {plan.plan_id} has invalid history metadata.",
+        )
+    history.append(
+        {
+            "version": plan.metadata["version"],
+            "status": next_status,
+            "created_at": timestamp,
+            "reason": reason.strip()
+            if isinstance(reason, str) and reason.strip()
+            else _default_reason(plan, changed_keys, next_status, status_changed),
+        }
+    )
+    _write_plan_metadata(plan)
+    snapshot_version(plan)
+    return load_plan(workspace, plan_id)
+
+
+def set_component(
+    workspace: Workspace,
+    plan_id: str,
+    component: str,
+    content: str,
+    reason: str | None = None,
+    *,
+    force: bool = False,
+) -> Plan:
+    return apply_plan_mutations(
+        workspace,
+        plan_id,
+        component_updates={component: content},
+        reason=reason,
+        force=force,
+    )
+
+
+def append_component(
+    workspace: Workspace,
+    plan_id: str,
+    component: str,
+    content: str,
+    reason: str | None = None,
+    *,
+    force: bool = False,
+) -> Plan:
+    return apply_plan_mutations(
+        workspace,
+        plan_id,
+        component_updates={component: content},
+        append_components={component},
+        reason=reason,
+        force=force,
+    )
+
+
+def set_plan_status(
+    workspace: Workspace,
+    plan_id: str,
+    status: str,
+    reason: str,
+    *,
+    force: bool = False,
+) -> Plan:
+    if not reason.strip():
+        raise PlanledgerError(
+            "missing_reason",
+            "Status changes require --reason.",
+        )
+    return apply_plan_mutations(
+        workspace,
+        plan_id,
+        status=status,
+        reason=reason,
+        force=force,
+    )
+
+
+def snapshot_version(plan: Plan) -> Path:
+    target = version_snapshot_dir(plan, plan.version)
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(plan_metadata_path_from_dir(plan.path), target / "plan.yaml")
+    shutil.copytree(plan.path / "components", target / "components")
+    manifest = {
+        "plan_id": plan.plan_id,
+        "version": plan.version,
+        "status": plan.status,
+        "generated_at": now_iso(),
+        "components": {
+            key: {
+                "path": spec.path,
+                "sha256": spec.sha256,
+            }
+            for key, spec in sorted(
+                plan.components.items(),
+                key=lambda item: (item[1].order, item[0]),
+            )
+        },
+    }
+    _write_yaml(target / "manifest.yaml", manifest)
+    return target
+
+
+def parse_version(value: str) -> int:
+    normalized = value.strip()
+    if normalized.startswith("v"):
+        normalized = normalized[1:]
+    try:
+        parsed = int(normalized)
+    except ValueError as exc:
+        raise PlanledgerError(
+            "invalid_version",
+            f"Invalid version reference {value!r}.",
+        ) from exc
+    if parsed <= 0:
+        raise PlanledgerError(
+            "invalid_version",
+            f"Invalid version reference {value!r}.",
+        )
+    return parsed
+
+
+def list_versions(plan: Plan) -> list[str]:
+    target_dir = versions_dir(plan)
+    if not target_dir.exists():
+        return []
+    versions = [item.name for item in sorted(target_dir.iterdir()) if item.is_dir()]
+    return versions
+
+
+def diff_versions(
+    workspace: Workspace,
+    plan_id: str,
+    from_version: str,
+    to_version: str,
+) -> str:
+    plan = load_plan(workspace, plan_id)
+    from_dir = version_snapshot_dir(plan, parse_version(from_version))
+    to_dir = version_snapshot_dir(plan, parse_version(to_version))
+    if not from_dir.exists():
+        raise PlanledgerError(
+            "not_found",
+            f"Snapshot {from_version} does not exist for {plan_id}.",
+        )
+    if not to_dir.exists():
+        raise PlanledgerError(
+            "not_found",
+            f"Snapshot {to_version} does not exist for {plan_id}.",
+        )
+    from_files = _snapshot_files(from_dir)
+    to_files = _snapshot_files(to_dir)
+    diff_lines: list[str] = []
+    import difflib
+
+    for relative_path in sorted(set(from_files) | set(to_files)):
+        before = from_files.get(relative_path, [])
+        after = to_files.get(relative_path, [])
+        diff_lines.extend(
+            difflib.unified_diff(
+                before,
+                after,
+                fromfile=f"{version_label(parse_version(from_version))}/{relative_path}",
+                tofile=f"{version_label(parse_version(to_version))}/{relative_path}",
+            )
+        )
+    return "".join(diff_lines) if diff_lines else "No differences.\n"
+
+
+def _snapshot_files(snapshot_dir: Path) -> dict[str, list[str]]:
+    results: dict[str, list[str]] = {}
+    for path in sorted(snapshot_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(snapshot_dir).as_posix()
+        results[relative] = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    return results
+
+
+def plan_to_dict(plan: Plan) -> dict[str, Any]:
+    return {
+        "plan_id": plan.plan_id,
+        "title": plan.title,
+        "status": plan.status,
+        "version": plan.version,
+        "path": str(plan.path),
+        "rendered_path": str(versioned_rendered_path(plan)),
+        "latest_rendered_path": str(latest_rendered_path(plan)),
+        "components": {
+            key: {
+                "title": spec.title,
+                "path": spec.path,
+                "order": spec.order,
+                "required": spec.required,
+                "sha256": spec.sha256,
+            }
+            for key, spec in sorted(
+                plan.components.items(),
+                key=lambda item: (item[1].order, item[0]),
+            )
+        },
+        "history": plan.metadata.get("history", []),
+    }
+
+
+def plan_status_counts(workspace: Workspace) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for plan in list_plans(workspace):
+        counts[plan.status] = counts.get(plan.status, 0) + 1
+    return counts
 
 
 def doctor(workspace: Workspace) -> dict[str, Any]:
-    issues: list[str] = []
-    if not workspace.config_path.exists():
-        issues.append(f"Missing {workspace.config_path.name}")
+    errors: list[str] = []
+    warnings: list[str] = []
+    legacy_dir = workspace.planledger_dir / "ledgers" / "main"
+    if legacy_dir.exists():
+        errors.append(
+            "Old schema detected under .planledger/ledgers/main; "
+            "automatic migration is unsupported."
+        )
+        warnings.append(
+            "Move the old .planledger directory aside or initialize "
+            "a fresh v2 workspace."
+        )
     if not workspace.storage_path.exists():
-        issues.append("Missing .planledger/storage.yaml")
-
-    for dir_name in RECORD_DIRS.values():
-        path = workspace.ledger_dir / dir_name
-        if not path.exists():
-            issues.append(f"Missing directory: {path.relative_to(workspace.root)}")
-
-    active = active_initiative(workspace)
-    if active is not None:
-        try:
-            load_record(workspace, "initiative", active)
-        except PlanledgerError:
-            issues.append(f"Active initiative {active} does not exist")
-
-    # Referential integrity checks
-    all_records: dict[str, dict[str, Record]] = {}
-    for kind in RECORD_DIRS:
-        all_records[kind] = {r.record_id: r for r in list_records(workspace, kind)}
-
-    for init_record in all_records["initiative"].values():
-        goal_ref = init_record.front_matter.get("goal")
-        if goal_ref and goal_ref not in all_records["goal"]:
-            issues.append(
-                f"Initiative {init_record.record_id} references missing goal {goal_ref}"
-            )
-
-    for plan_record in all_records["plan"].values():
-        init_ref = plan_record.front_matter.get("initiative")
-        if init_ref and init_ref not in all_records["initiative"]:
-            issues.append(
-                f"Plan {plan_record.record_id} references missing initiative {init_ref}"
-            )
-
-    for ms_record in all_records["milestone"].values():
-        plan_ref = ms_record.front_matter.get("plan")
-        if plan_ref and plan_ref not in all_records["plan"]:
-            issues.append(
-                f"Milestone {ms_record.record_id} references missing plan {plan_ref}"
-            )
-
-    for slice_record in all_records["slice"].values():
-        ms_ref = slice_record.front_matter.get("milestone")
-        if ms_ref and ms_ref not in all_records["milestone"]:
-            issues.append(
-                f"Slice {slice_record.record_id} references missing milestone {ms_ref}"
-            )
-
-    for opt_record in all_records["option"].values():
-        dec_ref = opt_record.front_matter.get("decision")
-        if dec_ref and dec_ref not in all_records["decision"]:
-            issues.append(
-                f"Option {opt_record.record_id} references missing decision {dec_ref}"
-            )
-
-    for term_record in all_records["language_term"].values():
-        area_ref = term_record.front_matter.get("area")
-        if area_ref and area_ref not in all_records["language_area"]:
-            issues.append(
-                f"Language term {term_record.record_id} references missing area {area_ref}"
-            )
-
-    for ambiguity_record in all_records["language_ambiguity"].values():
-        area_ref = ambiguity_record.front_matter.get("area")
-        if area_ref and area_ref not in all_records["language_area"]:
-            issues.append(
-                "Language ambiguity "
-                f"{ambiguity_record.record_id} references missing area {area_ref}"
-            )
-        question_ref = ambiguity_record.front_matter.get("question")
-        if question_ref and question_ref not in all_records["question"]:
-            issues.append(
-                "Language ambiguity "
-                f"{ambiguity_record.record_id} references missing question {question_ref}"
-            )
-
-    for challenge_record in all_records["challenge_session"].values():
-        plan_ref = challenge_record.front_matter.get("plan")
-        if plan_ref and plan_ref not in all_records["plan"]:
-            issues.append(
-                "Challenge session "
-                f"{challenge_record.record_id} references missing plan {plan_ref}"
-            )
-
+        errors.append("Missing .planledger/storage.yaml.")
+    else:
+        data = storage_data(workspace)
+        if int(data.get("schema_version", 0)) != 2:
+            errors.append("Unsupported storage schema; expected schema_version 2.")
+    if not plans_dir(workspace).exists():
+        errors.append("Missing .planledger/plans/ directory.")
+    if not errors:
+        for plan in list_plans(workspace):
+            plan_errors = validate_plan(plan)
+            for item in plan_errors:
+                errors.append(f"{plan.plan_id}: {item}")
     return {
-        "kind": "planledger_doctor",
-        "healthy": not issues,
-        "issues": issues,
+        "healthy": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "workspace": {
+            "root": str(workspace.root),
+            "config_path": str(workspace.config_path),
+            "planledger_dir": str(workspace.planledger_dir),
+            "storage_path": str(workspace.storage_path),
+        },
     }

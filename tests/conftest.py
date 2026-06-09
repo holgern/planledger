@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,16 @@ def invoke(runner: CliRunner):
         return runner.invoke(app, command)
 
     return _invoke
+
+
+@pytest.fixture
+def invoke_json(invoke):
+    def _invoke_json(workspace: Path, *args: str):
+        result = invoke(workspace, "--json", *args)
+        payload = json.loads(result.stdout)
+        return result, payload
+
+    return _invoke_json
 
 
 @pytest.fixture

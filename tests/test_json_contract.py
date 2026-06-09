@@ -1,30 +1,49 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 
-def test_success_envelope_contains_standard_fields(
-    invoke, initialized_workspace: Path
-) -> None:
-    workspace = initialized_workspace
-    result = invoke(workspace, "--json", "goal", "create", "Test goal")
-    payload = json.loads(result.stdout)
-    assert result.exit_code == 0
+def test_json_success_envelope(initialized_workspace: Path, invoke_json) -> None:
+    result, payload = invoke_json(
+        initialized_workspace,
+        "plan",
+        "create",
+        "--title",
+        "Add feature A",
+        "--request",
+        "Please review how we can add feature A.",
+    )
+
+    assert result.exit_code == 0, result.stdout
     assert payload["ok"] is True
-    assert payload["command"] == "goal.create"
+    assert payload["command"] == "plan.create"
     assert "result" in payload
-    assert "events" in payload
+    assert payload["events"] == []
 
 
-def test_error_envelope_contains_remediation(
-    invoke, initialized_workspace: Path
-) -> None:
-    workspace = initialized_workspace
-    result = invoke(workspace, "--json", "goal", "show", "goal-9999")
-    payload = json.loads(result.stdout)
+def test_json_error_envelope(initialized_workspace: Path, invoke_json) -> None:
+    create_result, _ = invoke_json(
+        initialized_workspace,
+        "plan",
+        "create",
+        "--title",
+        "Add feature A",
+        "--request",
+        "Please review how we can add feature A.",
+    )
+    result, payload = invoke_json(
+        initialized_workspace,
+        "plan",
+        "component",
+        "set",
+        "plan-0001",
+        "unknown_component",
+        "--text",
+        "text",
+    )
+
+    assert create_result.exit_code == 0, create_result.stdout
     assert result.exit_code != 0
     assert payload["ok"] is False
-    assert payload["command"] == "goal.show"
-    assert payload["error"]["kind"] == "not_found"
-    assert payload["error"].get("remediation")
+    assert payload["command"] == "plan.component.set"
+    assert set(payload["error"]) >= {"code", "message", "remediation"}

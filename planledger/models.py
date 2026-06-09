@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
+
+PlanStatus = Literal["new", "in_progress", "rework", "cancelled", "done"]
 
 
 @dataclass
@@ -18,15 +20,37 @@ class Workspace:
     config_path: Path
     planledger_dir: Path
     storage_path: Path
-    ledger_ref: str
-    ledger_dir: Path
     config: dict[str, Any]
 
 
 @dataclass
-class Record:
-    kind: str
-    record_id: str
+class ComponentSpec:
+    key: str
+    path: str
+    title: str
+    order: int
+    required: bool
+    sha256: str | None = None
+
+
+@dataclass
+class Plan:
+    plan_id: str
     path: Path
-    front_matter: dict[str, Any]
-    body: str
+    metadata: dict[str, Any]
+    components: dict[str, ComponentSpec] = field(default_factory=dict)
+
+    @property
+    def title(self) -> str:
+        return str(self.metadata.get("title") or "")
+
+    @property
+    def status(self) -> PlanStatus:
+        value = self.metadata.get("status", "new")
+        if not isinstance(value, str):
+            return "new"
+        return cast(PlanStatus, value)
+
+    @property
+    def version(self) -> int:
+        return int(self.metadata.get("version", 0))
