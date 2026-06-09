@@ -3,4 +3,4 @@ name = "planledger"
 uuid = "7f8fa0cb-3b38-4de5-89d8-e268d2ff9061"
 
 [storage]
-planledger_dir = ".planledger"
+planledger_dir = "../planledger-state/planledger"
