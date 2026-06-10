@@ -66,15 +66,30 @@ def test_diff_includes_changed_component_content(
 def test_diff_uses_active_plan(initialized_workspace: Path, invoke) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Active", "--request", "req",
+        "plan",
+        "create",
+        "--title",
+        "Active",
+        "--request",
+        "req",
     )
     invoke(
         initialized_workspace,
-        "plan", "component", "set", "summary", "--text", "Updated.",
+        "plan",
+        "component",
+        "set",
+        "summary",
+        "--text",
+        "Updated.",
     )
     result = invoke(
         initialized_workspace,
-        "plan", "diff", "--from", "v0001", "--to", "v0002",
+        "plan",
+        "diff",
+        "--from",
+        "v0001",
+        "--to",
+        "v0002",
     )
     assert result.exit_code == 0, result.stdout
     assert "+Updated." in result.stdout

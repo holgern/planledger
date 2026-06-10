@@ -42,6 +42,7 @@ def test_plan_create_builds_component_layout_and_rendered_artifact(
     assert (initialized_workspace / ".planledger" / "plans" / "plan-0002").is_dir()
     assert not (initialized_workspace / ".planledger" / "ledgers" / "main").exists()
 
+
 def test_plan_create_sets_active_plan(initialized_workspace: Path, invoke) -> None:
     result = invoke(
         initialized_workspace,
@@ -63,11 +64,21 @@ def test_plan_create_sets_active_plan(initialized_workspace: Path, invoke) -> No
 def test_plan_create_replaces_active_plan(initialized_workspace: Path, invoke) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "First", "--request", "First request.",
+        "plan",
+        "create",
+        "--title",
+        "First",
+        "--request",
+        "First request.",
     )
     second = invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Second", "--request", "Second request.",
+        "plan",
+        "create",
+        "--title",
+        "Second",
+        "--request",
+        "Second request.",
     )
     assert second.exit_code == 0, second.stdout
 
@@ -75,4 +86,3 @@ def test_plan_create_replaces_active_plan(initialized_workspace: Path, invoke) -
         (initialized_workspace / ".planledger" / "storage.yaml").read_text()
     )
     assert storage["active_plan_id"] == "plan-0002"
-

@@ -90,9 +90,9 @@ def test_no_stale_references_in_product_files() -> None:
 
 
 def test_skill_has_taskledger_style_agent_protocol_without_taskledger_scope() -> None:
-    skill = (
-        REPO_ROOT / "skills" / "planledger" / "SKILL.md"
-    ).read_text(encoding="utf-8")
+    skill = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
 
     required_sections = (
         "## When to use this skill",
@@ -152,9 +152,9 @@ def test_skill_has_taskledger_style_agent_protocol_without_taskledger_scope() ->
 
 
 def test_skill_has_read_command_table() -> None:
-    skill = (
-        REPO_ROOT / "skills" / "planledger" / "SKILL.md"
-    ).read_text(encoding="utf-8")
+    skill = (REPO_ROOT / "skills" / "planledger" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
 
     assert "## Which read command to use" in skill
     assert "planledger --json status" in skill

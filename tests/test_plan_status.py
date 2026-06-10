@@ -135,15 +135,27 @@ def test_plan_activate_switches_active_plan(
 ) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "First", "--request", "req1",
+        "plan",
+        "create",
+        "--title",
+        "First",
+        "--request",
+        "req1",
     )
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Second", "--request", "req2",
+        "plan",
+        "create",
+        "--title",
+        "Second",
+        "--request",
+        "req2",
     )
     result = invoke(
         initialized_workspace,
-        "plan", "activate", "plan-0001",
+        "plan",
+        "activate",
+        "plan-0001",
     )
     assert result.exit_code == 0, result.stdout
     assert "Activated plan-0001" in result.stdout
@@ -152,11 +164,17 @@ def test_plan_activate_switches_active_plan(
 def test_plan_show_uses_active_plan(initialized_workspace: Path, invoke) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Active", "--request", "req",
+        "plan",
+        "create",
+        "--title",
+        "Active",
+        "--request",
+        "req",
     )
     result = invoke(
         initialized_workspace,
-        "plan", "show",
+        "plan",
+        "show",
     )
     assert result.exit_code == 0, result.stdout
     assert "plan-0001" in result.stdout
@@ -167,15 +185,28 @@ def test_plan_show_plan_option_overrides_active(
 ) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "First", "--request", "req1",
+        "plan",
+        "create",
+        "--title",
+        "First",
+        "--request",
+        "req1",
     )
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Second", "--request", "req2",
+        "plan",
+        "create",
+        "--title",
+        "Second",
+        "--request",
+        "req2",
     )
     result = invoke(
         initialized_workspace,
-        "plan", "show", "--plan", "plan-0001",
+        "plan",
+        "show",
+        "--plan",
+        "plan-0001",
     )
     assert result.exit_code == 0, result.stdout
     assert "First" in result.stdout
@@ -186,15 +217,27 @@ def test_plan_show_positional_overrides_active(
 ) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "First", "--request", "req1",
+        "plan",
+        "create",
+        "--title",
+        "First",
+        "--request",
+        "req1",
     )
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Second", "--request", "req2",
+        "plan",
+        "create",
+        "--title",
+        "Second",
+        "--request",
+        "req2",
     )
     result = invoke(
         initialized_workspace,
-        "plan", "show", "plan-0001",
+        "plan",
+        "show",
+        "plan-0001",
     )
     assert result.exit_code == 0, result.stdout
     assert "First" in result.stdout
@@ -205,10 +248,10 @@ def test_plan_no_active_plan_no_selector_fails(
 ) -> None:
     result = invoke(
         initialized_workspace,
-        "plan", "show",
+        "plan",
+        "show",
     )
     assert result.exit_code != 0
     assert (
-        "no active plan" in result.stdout.lower()
-        or "no_active_plan" in result.stdout
+        "no active plan" in result.stdout.lower() or "no_active_plan" in result.stdout
     )

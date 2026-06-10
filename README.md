@@ -30,7 +30,7 @@ pip install -e .
 
 The CLI is the only supported mutation path. The rendered Markdown artifact is the deliverable.
 
-```bash
+````bash
 # Check workspace state
 planledger status
 planledger status --check
@@ -82,7 +82,7 @@ Every todo item in the `todo_items` component should follow this structure:
 **Validation**
 
 - `python -m pytest path/to/test_file.py -q`
-```
+````
 
 ## Handoff quality guardrails
 

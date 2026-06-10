@@ -48,9 +48,7 @@ def test_next_action_empty_required_components(
     assert payload["result"]["plan_id"] == "plan-0001"
 
 
-def test_next_action_with_explicit_plan_id(
-    initialized_workspace: Path, invoke
-) -> None:
+def test_next_action_with_explicit_plan_id(initialized_workspace: Path, invoke) -> None:
     create = invoke(
         initialized_workspace,
         "plan",
@@ -105,9 +103,7 @@ def test_next_action_done_plan(initialized_workspace: Path, invoke) -> None:
     assert payload["result"]["plan_id"] == "plan-0001"
 
 
-def test_next_action_prefers_active_plan(
-    initialized_workspace: Path, invoke
-) -> None:
+def test_next_action_prefers_active_plan(initialized_workspace: Path, invoke) -> None:
     for i in range(2):
         create = invoke(
             initialized_workspace,
@@ -149,6 +145,7 @@ def test_next_action_explicit_plan_overrides_active(
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["result"]["plan_id"] == "plan-0001"
+
 
 def test_next_action_is_read_only(initialized_workspace: Path, invoke) -> None:
     import json

@@ -341,7 +341,6 @@ def status(
     _run_command(ctx, "status", run)
 
 
-
 @app.command("doctor")
 def doctor_command(ctx: typer.Context) -> None:
     def run() -> tuple[dict[str, Any], str]:
@@ -793,6 +792,8 @@ def plan_apply(
         return result, _summary_message(plan, "Applied")
 
     _run_command(ctx, "plan.apply", run)
+
+
 @app.command("next-action")
 def next_action(
     ctx: typer.Context,
@@ -803,15 +804,15 @@ def next_action(
         workspace = discover_workspace(app_ctx)
         result = compute_next_action(workspace, plan_id)
         lines = [f"next_item: {result['next_item']}"]
-        if result.get('plan_id'):
+        if result.get("plan_id"):
             lines.append(f"plan_id: {result['plan_id']}")
-        if result.get('status'):
+        if result.get("status"):
             lines.append(f"status: {result['status']}")
-        if result.get('next_command'):
+        if result.get("next_command"):
             lines.append(f"next_command: {result['next_command']}")
-        for blocker in result.get('blockers', []):
+        for blocker in result.get("blockers", []):
             lines.append(f"blocker: {blocker}")
-        for error in result.get('validation_errors', []):
+        for error in result.get("validation_errors", []):
             lines.append(f"validation_error: {error}")
         return result, "\n".join(lines)
 

@@ -327,6 +327,7 @@ def allocate_plan_id(workspace: Workspace) -> str:
     save_storage_data(workspace, data)
     return plan_id
 
+
 def get_active_plan_id(workspace: Workspace) -> str | None:
     data = storage_data(workspace)
     return data.get("active_plan_id")
@@ -1042,6 +1043,8 @@ def doctor(workspace: Workspace) -> dict[str, Any]:
             "storage_path": str(workspace.storage_path),
         },
     }
+
+
 def compute_next_action(
     workspace: Workspace | None, plan_id: str | None = None
 ) -> dict[str, Any]:
@@ -1082,9 +1085,7 @@ def compute_next_action(
                     "status": None,
                     "next_item": "specify_plan",
                     "next_command": "planledger --json plan list",
-                    "blockers": [
-                        "Multiple non-done plans exist; specify a plan id."
-                    ],
+                    "blockers": ["Multiple non-done plans exist; specify a plan id."],
                     "validation_errors": [],
                 }
             else:
@@ -1094,7 +1095,7 @@ def compute_next_action(
                     "status": None,
                     "next_item": "create_plan",
                     "next_command": (
-                        "planledger plan create --title \"TITLE\" "
+                        'planledger plan create --title "TITLE" '
                         "--request-file /tmp/request.md"
                     ),
                     "blockers": [],
@@ -1155,8 +1156,7 @@ def compute_next_action(
         "status": plan.status,
         "next_item": "mark_done_after_human_approval",
         "next_command": (
-            f"planledger plan status {plan.plan_id} done "
-            f"--reason \"Ready for handoff.\""
+            f'planledger plan status {plan.plan_id} done --reason "Ready for handoff."'
         ),
         "blockers": [],
         "validation_errors": [],

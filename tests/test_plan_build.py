@@ -68,16 +68,22 @@ def test_build_is_deterministic_and_standalone(
 def test_build_uses_active_plan(initialized_workspace: Path, invoke) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Active", "--request", "req",
+        "plan",
+        "create",
+        "--title",
+        "Active",
+        "--request",
+        "req",
     )
     _fill_required_components(initialized_workspace, invoke)
     result = invoke(
         initialized_workspace,
-        "plan", "build", "--print",
+        "plan",
+        "build",
+        "--print",
     )
     assert result.exit_code == 0, result.stdout
     assert "## Proposed approach" in result.stdout
-
 
 
 def test_export_writes_active_plan_to_workspace_root(
@@ -151,4 +157,3 @@ def test_export_relative_out_is_workspace_relative(
     assert result.exit_code == 0, result.stdout
     assert exported.exists()
     assert str(exported) in result.stdout
-

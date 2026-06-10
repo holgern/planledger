@@ -106,7 +106,6 @@ def test_bundle_validation_rejects_unknown_components_and_invalid_statuses(
     assert "unknown component key" in result.stdout.lower()
 
 
-
 def test_plan_apply_reads_bundle_from_stdin(tmp_path: Path, runner) -> None:
     init = runner.invoke(
         app,
@@ -139,4 +138,3 @@ def test_plan_apply_reads_bundle_from_stdin(tmp_path: Path, runner) -> None:
         / "components"
         / "10-executive-verdict.md"
     ).read_text() == "Created through stdin bundle."
-

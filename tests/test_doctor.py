@@ -57,7 +57,12 @@ def test_status_check_runs_doctor(initialized_workspace: Path, invoke) -> None:
 def test_status_shows_active_plan(initialized_workspace: Path, invoke) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Active Plan", "--request", "req",
+        "plan",
+        "create",
+        "--title",
+        "Active Plan",
+        "--request",
+        "req",
     )
     result = invoke(initialized_workspace, "status")
     assert result.exit_code == 0, result.stdout
@@ -72,10 +77,10 @@ def test_doctor_reports_configured_external_paths_when_storage_missing(
     config_path = root / ".planledger.toml"
     config_path.write_text(
         "[project]\n"
-        "name = \"External Project\"\n"
-        "uuid = \"test-uuid\"\n\n"
+        'name = "External Project"\n'
+        'uuid = "test-uuid"\n\n'
         "[storage]\n"
-        "planledger_dir = \"../planledger-state/planledger\"\n",
+        'planledger_dir = "../planledger-state/planledger"\n',
         encoding="utf-8",
     )
 
@@ -99,10 +104,10 @@ def test_status_reports_configured_external_paths_when_storage_missing(
     config_path = root / ".planledger.toml"
     config_path.write_text(
         "[project]\n"
-        "name = \"External Project\"\n"
-        "uuid = \"test-uuid\"\n\n"
+        'name = "External Project"\n'
+        'uuid = "test-uuid"\n\n'
         "[storage]\n"
-        "planledger_dir = \"../planledger-state/planledger\"\n",
+        'planledger_dir = "../planledger-state/planledger"\n',
         encoding="utf-8",
     )
 

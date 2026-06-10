@@ -99,6 +99,7 @@ plan apply
 9. Export the rendered plan to the workspace root:
    - `planledger plan export`
    - Include the exported workspace path in the final response.
+
 ## Question protocol
 
 - If required decisions are missing, write them to `open_questions`, ask the user in chat, and stop.
@@ -194,22 +195,24 @@ cat <<'JSON' | planledger plan apply --file -
 }
 JSON
 ```
+
 ## Which read command to use
 
-| Need                  | Command                                                |
-| --------------------- | ------------------------------------------------------ |
-| Workspace overview    | `planledger --json status`                             |
+| Need                  | Command                                                   |
+| --------------------- | --------------------------------------------------------- |
+| Workspace overview    | `planledger --json status`                                |
 | Health check          | `planledger --json doctor` or `planledger status --check` |
-| Recommended next step | `planledger next-action [--json]`                      |
-| List plans            | `planledger --json plan list`                          |
-| Show active plan      | `planledger --json plan show`                          |
-| Show specific plan    | `planledger --json plan show --plan PLAN_ID`           |
-| Show rendered handoff | `planledger plan show --rendered`                      |
-| List components       | `planledger --json plan component list`                |
-| Read component        | `planledger plan component show COMPONENT`             |
-| Show versions         | `planledger --json plan versions`                      |
-| Compare versions      | `planledger plan diff --from v0001 --to v0002`         |
-| Export to workspace   | `planledger plan export [--plan PLAN_ID] [--out PATH]` |
+| Recommended next step | `planledger next-action [--json]`                         |
+| List plans            | `planledger --json plan list`                             |
+| Show active plan      | `planledger --json plan show`                             |
+| Show specific plan    | `planledger --json plan show --plan PLAN_ID`              |
+| Show rendered handoff | `planledger plan show --rendered`                         |
+| List components       | `planledger --json plan component list`                   |
+| Read component        | `planledger plan component show COMPONENT`                |
+| Show versions         | `planledger --json plan versions`                         |
+| Compare versions      | `planledger plan diff --from v0001 --to v0002`            |
+| Export to workspace   | `planledger plan export [--plan PLAN_ID] [--out PATH]`    |
+
 ## CLI failure protocol
 
 If a Planledger command raises a Python traceback:

@@ -36,11 +36,17 @@ def test_versions_lists_snapshot_directories(
 def test_versions_uses_active_plan(initialized_workspace: Path, invoke) -> None:
     invoke(
         initialized_workspace,
-        "plan", "create", "--title", "Active", "--request", "req",
+        "plan",
+        "create",
+        "--title",
+        "Active",
+        "--request",
+        "req",
     )
     result = invoke(
         initialized_workspace,
-        "plan", "versions",
+        "plan",
+        "versions",
     )
     assert result.exit_code == 0, result.stdout
     assert "v0001" in result.stdout
